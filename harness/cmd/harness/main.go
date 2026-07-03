@@ -54,6 +54,8 @@ func main() {
 		runLoad(ctx, args)
 	case "measure":
 		runMeasure(ctx, args)
+	case "next-version":
+		runNextVersion(args)
 	case "report":
 		runReport(args)
 	case "-h", "--help", "help":
@@ -73,6 +75,7 @@ usage:
   harness probe                run the per-node probe (ECHO_ADDR, NODE_NAME, ...)
   harness load [flags]         run the concurrent load generator (ECHO_ADDR, ...)
   harness measure [flags]      orchestrate a ztunnel upgrade and measure drops
+  harness next-version [flags] print the next fresh umbrella chart version (single authority)
   harness report [flags]       render a Markdown PASS/FAIL report from a Result JSON
 `)
 }
@@ -138,8 +141,11 @@ func runMeasure(ctx context.Context, args []string) {
 	cfg := live.DefaultMeasureConfig()
 	fs.StringVar(&cfg.TriggerKind, "trigger", cfg.TriggerKind, "trigger kind: git-bump | rollout-restart")
 	fs.StringVar(&cfg.RepoRoot, "repo-root", ".", "path to the lab repo working copy (git-bump)")
-	fs.StringVar(&cfg.ZtunnelFrom, "ztunnel-from", "1.29.2", "current ztunnel version (git-bump)")
-	fs.StringVar(&cfg.ZtunnelTo, "ztunnel-to", "1.29.5", "target ztunnel version (git-bump)")
+	fs.StringVar(&cfg.Hop, "hop", cfg.Hop, "git-bump hop: patch (ztunnel dep only) | minor (all four deps + appVersion)")
+	fs.StringVar(&cfg.ZtunnelFrom, "ztunnel-from", "1.29.2", "current ztunnel version (git-bump patch hop)")
+	fs.StringVar(&cfg.ZtunnelTo, "ztunnel-to", "1.29.5", "target ztunnel version (git-bump patch hop)")
+	fs.StringVar(&cfg.VersionFrom, "version-from", "1.29.2", "current istio version for all deps + appVersion (git-bump minor hop)")
+	fs.StringVar(&cfg.VersionTo, "version-to", "1.30.0", "target istio version (git-bump minor hop)")
 	fs.StringVar(&cfg.ChartVersionTo, "chart-version-to", "1.0.1", "umbrella chart version to publish (git-bump)")
 	fs.StringVar(&cfg.OutPath, "out", "-", "Result JSON destination ('-' => stdout)")
 	fs.StringVar(&cfg.OutClientsPath, "out-clients", "", "per-client observations JSON destination ('' => producer disabled)")
@@ -157,6 +163,23 @@ func runMeasure(ctx context.Context, args []string) {
 	}
 	_ = res
 	os.Exit(code)
+}
+
+// runNextVersion prints the next fresh umbrella chart version for a hop. It is
+// the ONE authority the scenario scripts call so a run never invents a version
+// string in shell (which would risk drifting from the Go bump logic).
+func runNextVersion(args []string) {
+	fs := flag.NewFlagSet("next-version", flag.ExitOnError)
+	current := fs.String("current", "", "current umbrella chart version (required, e.g. 1.0.0)")
+	hop := fs.String("hop", "patch", "hop: patch | minor")
+	runTag := fs.String("run-tag", "", "prerelease run tag (required; appended as -dev<runTag>)")
+	_ = fs.Parse(args)
+	v, err := live.NextChartVersion(*current, *hop, *runTag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "next-version: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(v)
 }
 
 func runReport(args []string) {

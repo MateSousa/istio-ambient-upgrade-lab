@@ -283,6 +283,76 @@ it is the thing under test. Two consequences to know:
   re-pull. To force ArgoCD to re-pull during iteration, bump to a pre-release
   like `1.0.0-dev1` (chart version + `targetRevision` together).
 
+## Upgrade scenarios (slice 8)
+
+Five scripted scenarios (`scripts/scenarios/`) exercise the full drill end to end
+against the running lab. Each sets `set -euo pipefail`, installs a trap-guarded
+restore, and prints `PASS`/`FAIL` gates. `make scenarios-check` (shellcheck +
+`bash -n`) is the **hermetic** CI entry — it needs no cluster; the scenario
+**runs** need a cluster (and, except drain, `GHCR_TOKEN`).
+
+| `make` target | Hop | Needs | Expected |
+|---|---|---|---|
+| `scenario-drain` | — | cluster | **PASS** — zero-drop on the drained node |
+| `scenario-patch` | patch `1.29.2→1.29.5` | cluster + GHCR | **PASS** |
+| `scenario-atomic-sync` | — | cluster + GHCR | **PASS** — reproduces then mitigates the hazard |
+| `scenario-minor` | minor `1.29→1.30` | cluster + GHCR | **measured** (PASS *not* required) — run last |
+| `scenario-reset` | rollback to `1.29.2` | cluster + GHCR | **PASS** |
+
+### Git writes to `main` (by design)
+
+A throwaway branch is **off the table**: `demo-root` tracks `HEAD` and the `mesh`
+Application only rolls when the published chart **and** the `targetRevision` bump
+land on the branch ArgoCD watches (`main`). A bump stranded on a side branch
+produces no roll → the analyzer reports `ERROR no-rollout-observed`. So `patch`,
+`minor`, `atomic-sync`, and `reset` **commit + push to `main`** and each
+accumulates one more **immutable** GHCR chart version (prune later via the GHCR
+UI or `gh api` if the registry gets noisy). The **fresh version is minted by one
+authority** — `harness next-version` — so a run never invents a version string in
+shell (it always carries a mandatory `-dev<timestamp>` prerelease and stays
+`<2.0.0`).
+
+### Drain = zero drops (honest framing + scoped claim)
+
+`scenario-drain` **drains the connections off a node before rolling its ztunnel**,
+so **zero RSTs are attributable to that node**. It is *deterministic*, not a
+`kubectl drain`: the probe/echo/load pods are pinned by `nodeName` (which bypasses
+the scheduler **by design**), so a plain drain would refuse to evict them or leave
+them `Pending`. Instead it **cordons**, **suspends `selfHeal` on the `probe` *and*
+`load` Applications** (required — else ArgoCD reverts the scale-to-0 back to
+`replicas:1` from `HEAD`), **scales the target node's echo/probe/load Deployments
+to 0** and `wait --for=delete`s them, then fires the roll. The proof is a hard
+assertion on `results.json`: the drained node's `perNodeAttribution` entry **must
+exist**, be **closed** (`window.readyAt != null`, not half-open), and have
+**`distinctConnsReset == 0`**; the script prints that `0` against the other nodes'
+normal bounded resets as the contrast. **No pods are left `Pending`** — `nodeName`
+bypasses the scheduler. **Scoped claim:** zero-drop covers the mesh workloads we
+control (`probe`/`load`/`echo`). `app-a`/`app-b`/`app-c` are ordinary schedulable
+clients, not harness probes; one may sit on the target node and reset elsewhere —
+that is invisible to the verdict and **not** part of the claim.
+
+### Atomic sync (the contrast)
+
+`scenario-atomic-sync` first **reproduces** the hazard — float `targetRevision` to
+`">=1.0.0 <2.0.0"` with `selfHeal`, publish a fresh chart, and watch ArgoCD
+auto-deploy it **unbidden** (counted via the `mesh` Application's sync history) —
+then **mitigates** it: re-pin to an exact version and bump the chart version **and**
+`targetRevision` **together in one commit**, yielding a single operator-gated roll.
+
+### Minor is terminal
+
+`scenario-minor` is **run last**. A minor hop crosses a minor, is governed by the
+skew rule, and **touches CRDs**: the vendored **Gateway API v1.2.1** CRDs and
+istio 1.30's expected CRD set can end up mutually incompatible, and ArgoCD
+`prune`/`selfHeal` make a CRD change a **cascade** (a renamed/removed CRD can prune
+every CR of that kind). Because of that cascade, `scenario-reset` may **not**
+un-wedge a minor-hopped cluster. The **guaranteed** recovery — and what `reset`'s
+header points you to — is a full rebuild:
+
+```bash
+make down && make up
+```
+
 ## Known issues / gotchas
 
 - **Docker Desktop inotify limits.** `fs.inotify.max_user_instances` and
@@ -331,5 +401,10 @@ kind/cluster.yaml        1 control-plane + 3 workers, k8s 1.33.7 by digest
 scripts/                 up / down / publish-chart / build-app-images / gen-scram /
                          wait-mesh / ensure-gatewayclass / verify / verify-data /
                          verify-topology / verify-observability / no-identity-scan
+  scenarios/             slice-8 upgrade scenarios: scenario-lib (shared helpers) +
+                         drain / patch / atomic-sync / minor / reset
 Makefile
+harness/                 drop-measurement harness (Go); `harness next-version` is
+                         the single fresh-umbrella-version authority the scenarios call
+
 ```

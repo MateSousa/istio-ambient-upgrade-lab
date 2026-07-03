@@ -23,8 +23,11 @@ import (
 type MeasureConfig struct {
 	TriggerKind    string        // "git-bump" (default) | "rollout-restart"
 	RepoRoot       string        // lab repo working copy (git-bump)
-	ZtunnelFrom    string        // git-bump: current ztunnel version
-	ZtunnelTo      string        // git-bump: target ztunnel version
+	Hop            string        // git-bump: "patch" (default, ztunnel-only) | "minor" (all four deps + appVersion)
+	ZtunnelFrom    string        // git-bump patch hop: current ztunnel version
+	ZtunnelTo      string        // git-bump patch hop: target ztunnel version
+	VersionFrom    string        // git-bump minor hop: current istio version (all deps + appVersion)
+	VersionTo      string        // git-bump minor hop: target istio version
 	ChartVersionTo string        // git-bump: umbrella chart version to publish
 	Acknowledged   bool          // rollout-restart escape-hatch acknowledgement
 	Deadline       time.Duration // observation window (default 5m)
@@ -40,6 +43,7 @@ type MeasureConfig struct {
 func DefaultMeasureConfig() MeasureConfig {
 	return MeasureConfig{
 		TriggerKind:    "git-bump",
+		Hop:            "patch",
 		Deadline:       5 * time.Minute,
 		ProbeNamespace: "demo-app",
 		Grace:          120 * time.Second,
@@ -142,8 +146,11 @@ func fireTrigger(ctx context.Context, cfg MeasureConfig, dyn dynamic.Interface) 
 	default: // git-bump
 		out, err := RunGitBump(ctx, GitBumpConfig{
 			RepoRoot:       cfg.RepoRoot,
+			Hop:            cfg.Hop,
 			ZtunnelFrom:    cfg.ZtunnelFrom,
 			ZtunnelTo:      cfg.ZtunnelTo,
+			VersionFrom:    cfg.VersionFrom,
+			VersionTo:      cfg.VersionTo,
 			ChartVersionTo: cfg.ChartVersionTo,
 		})
 		if out.Prereq != "" {

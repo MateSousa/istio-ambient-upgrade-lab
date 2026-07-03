@@ -7,7 +7,9 @@ SHELL := /usr/bin/env bash
 
 .PHONY: help up down publish-chart build-images verify verify-observability scan \
 	argocd-password argocd-ui grafana-ui prometheus-ui loki-ui \
-	harness-build harness-test measure load report
+	harness-build harness-test measure load report \
+	scenario-patch scenario-drain scenario-atomic-sync scenario-minor scenario-reset \
+	scenarios-check
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -48,6 +50,29 @@ load: ## Run the concurrent load generator locally (ECHO_ADDR etc. via env/flags
 
 report: ## Render a Markdown PASS/FAIL report from a measure Result (REPORT_ARGS passthrough)
 	cd harness && go run ./cmd/harness report --in ../results.json --out ../report.md $(REPORT_ARGS)
+
+scenario-drain: ## Scenario: cordon/drain a node then roll -> zero-drop proof (needs cluster; no GHCR)
+	scripts/scenarios/scenario-drain.sh
+
+scenario-patch: ## Scenario: patch hop ztunnel 1.29.2->1.29.5, expect PASS (needs cluster + GHCR_TOKEN; writes to main)
+	scripts/scenarios/scenario-patch.sh
+
+scenario-atomic-sync: ## Scenario: reproduce the floating auto-sync hazard then the atomic-pin fix (needs cluster + GHCR_TOKEN; writes to main)
+	scripts/scenarios/scenario-atomic-sync.sh
+
+scenario-minor: ## Scenario (RUN LAST): minor hop 1.29->1.30, measured report; may wedge -> make down/up (needs cluster + GHCR_TOKEN; writes to main)
+	scripts/scenarios/scenario-minor.sh
+
+scenario-reset: ## Scenario: roll the live cluster back to the 1.29.2 baseline (needs cluster + GHCR_TOKEN; writes to main)
+	scripts/scenarios/scenario-reset.sh
+
+scenarios-check: ## Hermetic CI: shellcheck + bash -n on the scenario scripts (no cluster needed)
+	@for f in scripts/scenarios/*.sh; do bash -n "$$f" || exit 1; done
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x scripts/scenarios/*.sh && echo "PASS: shellcheck clean"; \
+	else \
+		echo "WARN: shellcheck not installed; ran bash -n only"; \
+	fi
 
 argocd-password: ## Print the initial ArgoCD admin password
 	@kubectl -n argocd get secret argocd-initial-admin-secret \
