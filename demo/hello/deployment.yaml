@@ -1,8 +1,9 @@
 # hello - a minimal HTTP workload used to prove ambient datapath enrollment.
-# Any long-lived pod works; httpbin is convenient (it answers on :80 and is a
-# common upstream mesh demo image). verify.sh asserts this pod's IP shows up in
-# the ztunnel config_dump on the pod's node - real datapath proof, not just
-# "pod Running + namespace labelled".
+# Any long-lived pod works; nginx is a small, multi-arch (amd64 + arm64) image
+# that answers 200 on / - deliberately chosen over the amd64-only httpbin so the
+# pod pulls and runs on Apple Silicon kind nodes. verify.sh asserts this pod's IP
+# shows up in the ztunnel config_dump on the pod's node - real datapath proof,
+# not just "pod Running + namespace labelled".
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,20 +22,20 @@ spec:
         app: hello
     spec:
       containers:
-        - name: httpbin
-          image: docker.io/kennethreitz/httpbin:latest
+        - name: hello
+          image: docker.io/library/nginx:1.27-alpine
           ports:
             - containerPort: 80
               name: http
           readinessProbe:
             httpGet:
-              path: /status/200
+              path: /
               port: 80
             initialDelaySeconds: 3
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /status/200
+              path: /
               port: 80
             initialDelaySeconds: 5
             periodSeconds: 10
