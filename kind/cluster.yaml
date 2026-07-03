@@ -1,0 +1,27 @@
+# kind cluster for the Istio ambient upgrade lab.
+#
+# Topology: 1 control-plane + 2 workers. Two workers is the minimum that makes
+# per-node ztunnel/CNI DaemonSet behaviour observable (a workload on one node,
+# its ztunnel rolling independently of the other node). Add workers by copying
+# a `- role: worker` line; the DaemonSet gates in verify.sh are status-based, so
+# they adapt to any node count without edits.
+#
+# Node image is pinned BY DIGEST to Kubernetes v1.33.7, the 1.33 image published
+# for kind v0.31.0. Rationale: Istio 1.29.2's supported Kubernetes matrix tops
+# out around 1.33; kind v0.31.0's built-in default node image is v1.35.0, which
+# is too new for Istio 1.29 and would run the mesh on an unsupported API server.
+# Pinning by digest also guarantees a reproducible image built for this release.
+#
+# kindnet (the default CNI) is intentionally kept: istio-cni does NOT replace the
+# primary CNI in ambient mode, it chains onto it. No extraMounts are required for
+# this slice.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: istio-ambient-lab
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.33.7@sha256:d26ef333bdb2cbe9862a0f7c3803ecc7b4303d8cea8e814b481b09949d353040
+  - role: worker
+    image: kindest/node:v1.33.7@sha256:d26ef333bdb2cbe9862a0f7c3803ecc7b4303d8cea8e814b481b09949d353040
+  - role: worker
+    image: kindest/node:v1.33.7@sha256:d26ef333bdb2cbe9862a0f7c3803ecc7b4303d8cea8e814b481b09949d353040

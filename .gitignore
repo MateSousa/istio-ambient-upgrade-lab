@@ -1,0 +1,15 @@
+# Vendored subcharts + packaged artifacts (produced by helm dependency build /
+# helm package). They are pulled fresh from upstream and rebuilt on demand.
+charts/istio/charts/
+charts/istio/Chart.lock
+dist/
+*.tgz
+
+# Generated secret rendered from the GHCR OCI repo-secret template at apply time.
+# Never commit a real token.
+gitops/argocd/install/.ghcr-repo-secret.generated.yaml
+
+# Kubeconfig / local state
+kubeconfig
+*.kubeconfig
+.env

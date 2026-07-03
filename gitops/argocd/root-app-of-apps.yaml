@@ -1,0 +1,29 @@
+# Root app-of-apps. ArgoCD watches this repo's apps/ directory (recursively) and
+# treats every Application manifest it finds there as a child app. In this slice
+# only apps/mesh/ is populated (the mesh umbrella + the demo workload); the
+# data/ apps/ observability/ directories hold a .gitkeep placeholder and are
+# wired up by later slices.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: apps/
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

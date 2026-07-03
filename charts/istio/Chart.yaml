@@ -1,0 +1,32 @@
+apiVersion: v2
+name: istio
+description: Istio ambient mesh - umbrella over the four upstream Istio charts (base, cni, istiod, ztunnel)
+type: application
+version: 1.0.0
+appVersion: "1.29.2"
+
+dependencies:
+  - name: base
+    version: 1.29.2
+    repository: https://istio-release.storage.googleapis.com/charts
+  - name: cni
+    version: 1.29.2
+    repository: https://istio-release.storage.googleapis.com/charts
+  - name: istiod
+    version: 1.29.2
+    repository: https://istio-release.storage.googleapis.com/charts
+  - name: ztunnel
+    version: 1.29.2
+    repository: https://istio-release.storage.googleapis.com/charts
+
+keywords:
+  - istio
+  - ambient
+  - mesh
+
+maintainers:
+  - name: istio-ambient-upgrade-lab
+
+annotations:
+  category: networking
+  service.type: "mesh"

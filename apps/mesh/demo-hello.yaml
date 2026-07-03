@@ -1,0 +1,33 @@
+# demo-hello - the in-mesh test workload.
+#
+# Deployed as a child Application on a LATER sync-wave than the mesh so the
+# ambient control plane (istiod + istio-cni + ztunnel) is up before the demo
+# namespace is ambient-enrolled and its pod starts. Sources the demo/hello
+# directory in this same git repo (namespace + Deployment + Service).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-hello
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: demo/hello
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

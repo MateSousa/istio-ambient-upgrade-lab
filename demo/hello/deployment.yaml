@@ -1,0 +1,40 @@
+# hello - a minimal HTTP workload used to prove ambient datapath enrollment.
+# Any long-lived pod works; httpbin is convenient (it answers on :80 and is a
+# common upstream mesh demo image). verify.sh asserts this pod's IP shows up in
+# the ztunnel config_dump on the pod's node - real datapath proof, not just
+# "pod Running + namespace labelled".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello
+  namespace: demo-app
+  labels:
+    app: hello
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello
+  template:
+    metadata:
+      labels:
+        app: hello
+    spec:
+      containers:
+        - name: httpbin
+          image: docker.io/kennethreitz/httpbin:latest
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /status/200
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /status/200
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10

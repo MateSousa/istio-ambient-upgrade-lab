@@ -1,0 +1,55 @@
+# mesh - the Istio ambient umbrella release.
+#
+# Single Application installing the umbrella chart (base + cni + istiod + ztunnel
+# as Helm dependencies) from the private GHCR OCI registry. One release, one
+# upgrade transaction, one set of values - structurally identical to the real
+# nonprod delivery model, but with upstream docker.io/istio images.
+#
+# targetRevision is an EXACT pin (1.0.0), not a range. The production model
+# FLOATS a bounded range (">=1.0.0 <2.0.0") so a new chart publish auto-syncs;
+# that floating/auto-sync behaviour is introduced in the upgrade-scenario slice,
+# where the atomic-sync hazard it creates is the thing under test. Here we pin so
+# the skeleton converges deterministically. (Re-publishing the SAME version does
+# not re-pull under a fixed pin - bump to 1.0.0-devN to force a re-pull.)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mesh
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/matesousa/charts
+    chart: istio
+    targetRevision: 1.0.0
+    helm:
+      releaseName: istio
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  # istiod (managedFields manager: pilot-discovery) runtime-patches failurePolicy
+  # on the validating webhooks it owns, toggling Fail/Ignore based on its own
+  # readiness. Argo would otherwise see this as perpetual drift.
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      jqPathExpressions:
+        - .webhooks[].failurePolicy
+  syncPolicy:
+    # istio-cni runs privileged (needs root for iptables). Pre-label istio-system
+    # with privileged Pod Security Admission so CNI pods aren't blocked.
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: privileged
+        pod-security.kubernetes.io/warn: privileged
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

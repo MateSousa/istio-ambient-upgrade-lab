@@ -1,0 +1,26 @@
+# Istio umbrella chart defaults.
+#
+# Each subchart's values nest under its dependency name (base, cni, istiod,
+# ztunnel). Images are NOT overridden here: global.hub / global.tag / variant
+# are deliberately left unset so every subchart resolves its image from its own
+# appVersion (= 1.29.2) against the upstream docker.io/istio registry. That is
+# the whole point of the lab: pure upstream mechanics, no private mirror.
+
+cni:
+  # Ambient profile: install the CNI in ambient mode (istio-cni-node DaemonSet
+  # programming in-pod redirection). reconcileIptablesOnStartup is left at its
+  # 1.29 default (true) on purpose - it is the precondition that lets the CNI
+  # DaemonSet roll without dropping existing ambient connections.
+  profile: ambient
+
+istiod:
+  # Ambient profile: enable the ztunnel/ambient control-plane surface in istiod.
+  profile: ambient
+
+ztunnel:
+  # Give ztunnel a long drain on shutdown. ztunnel's internal connection drain
+  # is (terminationGracePeriodSeconds - 5s) for grace > 10s, so 120s => ~115s of
+  # drain - enough to outlast normal request lifetimes before the old ztunnel
+  # RSTs whatever long-lived L4 connections remain open. This is the single
+  # behavioural knob the whole upgrade drill exists to reason about.
+  terminationGracePeriodSeconds: 120
