@@ -289,9 +289,10 @@ are thin wrappers so there is a single implementation that cannot drift.
   absent (tarball/CI). `harness scan --worktree` forces the walk and includes
   untracked files.
 - The patterns live in one fragment-assembled rule file that the scan excludes
-  from itself, alongside this module's own `testdata/` fixtures (a deliberately
-  narrow exclusion — a real secret in any other path is still caught). Every
-  other file, including the tests, is fingerprint-free.
+  from itself (a deliberately narrow exclusion — a real secret in any other path
+  is still caught). Every other file, including the tests, is fingerprint-free:
+  the positive fixture corpus is assembled from fragments at test time into a
+  temp dir, so no identifier is ever written to a committed file on disk.
 - `make install-hooks` points `core.hooksPath` at `.githooks`, whose `pre-push`
   hook runs the scan and blocks a push on any finding. It is **opt-in per clone**
   and bypassable with `git push --no-verify`; `make scan` and CI are the real

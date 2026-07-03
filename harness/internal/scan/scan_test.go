@@ -29,9 +29,37 @@ func repoRoot(t *testing.T) string {
 	return filepath.Join(scanDir(t), "..", "..", "..")
 }
 
-func plantedDir(t *testing.T) string {
+// buildPlantedCorpus materialises the positive fixture corpus into a fresh temp
+// dir at TEST TIME. Every fixture is fragment-assembled with frag() (the same
+// primitive rules.go uses), so no forbidden literal is ever written to a
+// committed file - the corpus exists only on disk under t.TempDir() while the
+// test runs. Collectively the files fire every rule in DefaultRules(). The
+// example account id 123456789012 is intentionally used for the ecr/irsa shapes
+// (it is a shape match, not one of the real account ids), and the IRSA role name
+// is generic (no internal codename).
+func buildPlantedCorpus(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(scanDir(t), "testdata", "planted")
+	lower := frag("read", "yon")
+	upper := frag("READ", "YON")
+	mixed := frag("Ready", "On")
+	domain := frag("onr", "eady") + "." + frag("d", "ev")
+	ns := frag("opentelemetry-operator", "-system")
+	ecrHost := "123456789012" + frag(".dkr", ".ecr", ".us-east-2", ".amazonaws", ".com")
+	irsaARN := frag("arn:aws:iam::", "123456789012:") + "role/example-irsa-external-secrets"
+
+	return writeTree(t, map[string]string{
+		"org.txt": "deploy target: " + lower + " primary cluster\n" +
+			"mixed case must also trip: " + upper + " and " + mixed + "\n",
+		"domain.txt": "ArgoCD lives at argocd." + domain + " behind the platform account.\n",
+		"account.txt": "prod account: " + frag("975707", "452016") + "\n" +
+			"nonprod account: " + frag("116153", "546408") + "\n" +
+			"platform account: " + frag("951113", "916427") + "\n" +
+			"management account: " + frag("835975", "842700") + "\n",
+		"ecr.txt":  "image: " + ecrHost + "/mesh/ztunnel:1.29.2\n",
+		"irsa.txt": "roleArn: " + irsaARN + "\n",
+		"otel.txt": "endpoint: http://otel-collector." + ns + "." + frag("svc", ".cluster.local") + ":4317\n" +
+			"bare namespace reference: " + ns + "\n",
+	})
 }
 
 func hasGit() bool {
@@ -113,7 +141,7 @@ func assertMatchAnchored(t *testing.T, root string, findings []Finding) {
 // Every rule matches its positive planted fixture, and every finding's
 // rule/file/line/col/match is internally consistent (also covers case 6).
 func TestEachRuleMatchesPlantedFixture(t *testing.T) {
-	root := plantedDir(t)
+	root := buildPlantedCorpus(t)
 	findings, err := Scan(root, allRulesConfig())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
@@ -296,7 +324,7 @@ func TestSelfReferencePair(t *testing.T) {
 		t.Log("git unavailable; skipping the real-repo self-scan half")
 	}
 
-	planted := plantedDir(t)
+	planted := buildPlantedCorpus(t)
 	cfg := Config{Rules: DefaultRules(), Lister: WalkLister, SkipBinary: true} // no testdata exclusion
 	findings, err := Scan(planted, cfg)
 	if err != nil {

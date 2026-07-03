@@ -1,2 +1,0 @@
-endpoint: http://otel-collector.opentelemetry-operator-system.svc.cluster.local:4317
-bare namespace reference: opentelemetry-operator-system

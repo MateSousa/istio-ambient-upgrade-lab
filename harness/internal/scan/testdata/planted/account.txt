@@ -1,4 +1,0 @@
-prod account: 123456789012
-nonprod account: 123456789012
-platform account: 123456789012
-management account: 123456789012

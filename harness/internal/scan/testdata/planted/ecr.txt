@@ -1,1 +1,0 @@
-image: 123456789012.dkr.ecr.us-east-2.amazonaws.com/mesh/ztunnel:1.29.2
