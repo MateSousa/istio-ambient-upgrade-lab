@@ -28,6 +28,7 @@ type testEcho struct {
 	mu        sync.Mutex
 	cur       int
 	peak      int
+	total     int
 	durations []time.Duration
 }
 
@@ -49,6 +50,12 @@ func (e *testEcho) peakVal() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.peak
+}
+
+func (e *testEcho) totalVal() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.total
 }
 
 func (e *testEcho) maxDuration() time.Duration {
@@ -77,6 +84,7 @@ func (e *testEcho) handle(conn net.Conn) {
 	start := time.Now()
 	e.mu.Lock()
 	e.cur++
+	e.total++
 	if e.cur > e.peak {
 		e.peak = e.cur
 	}
@@ -450,6 +458,81 @@ func TestT7_CleanShutdownNoResetEOF(t *testing.T) {
 
 	if r, e := countKind(evs, model.ConnReset), countKind(evs, model.ConnEOF); r != 0 || e != 0 {
 		t.Fatalf("clean shutdown emitted reset=%d eof=%d, want 0/0", r, e)
+	}
+}
+
+// distinctHeldConnIDs returns the set of connIds that appear on held-connection
+// events (keepalive/reset/eof), which carry the LIVE connId of the held session.
+func distinctHeldConnIDs(evs []model.ConnEvent) []string {
+	seen := map[string]bool{}
+	for _, e := range evs {
+		switch e.Kind {
+		case model.ConnKeepaliveOK, model.ConnReset, model.ConnEOF:
+			seen[e.ConnID] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out
+}
+
+// T8: the CRITICAL id-hoist. A long-lived worker driven with a SHORT Hold cycles
+// through MANY held sessions inside one run. Because the id sequence is created
+// ONCE per worker (not per session), every held connId stays globally unique
+// across all sessions - one fresh id per Hold cycle. A per-session seq would
+// restart every session at "<node>-held-1", so all sessions would collide onto a
+// SINGLE id (distinct count == 1), which the analyzer's global connId-keyed maps
+// turn into corrupted recovery and false FAILs. This test FAILS against the
+// pre-fix (per-session seq) code and PASSES after the hoist.
+func TestT8_MultiSessionConnIDsUnique(t *testing.T) {
+	echo := newTestEcho(t, 0) // healthy echo: each session ends on its Hold, never a break
+	defer echo.close()
+
+	cfg := Config{
+		Concurrency:  1,
+		LongFraction: 1.0,
+		Hold:         40 * time.Millisecond, // short => many sessions across the run
+		KeepAlive:    10 * time.Millisecond,
+		Node:         "n",
+		EchoAddr:     echo.addr(),
+	}
+	evs, _ := runLoadCollect(cfg, 600*time.Millisecond)
+
+	// Premise: multiple held sessions actually ran. With a healthy echo the long
+	// worker opens exactly one connection per session, so the echo's total accept
+	// count is the number of sessions.
+	sessions := echo.totalVal()
+	if sessions < 3 {
+		t.Fatalf("test premise not met: only %d held session(s) ran, need several to exercise id reuse", sessions)
+	}
+
+	heldIDs := distinctHeldConnIDs(evs)
+	// Each session gets its own unique id, so distinct ids == sessions (allowing a
+	// single trailing session that was cancelled before emitting a keepalive). A
+	// per-session seq collapses every session onto one id (distinct == 1).
+	if len(heldIDs) < sessions-1 {
+		t.Fatalf("held connIds reused across sessions: %d sessions ran but only %d distinct held connId(s) %v - the id sequence must be per-worker, not per-session", sessions, len(heldIDs), heldIDs)
+	}
+}
+
+// TestValidateHoldFloor pins the CLI-boundary floor check that the --hold flag
+// must gate through: a sub-floor hold is rejected, a hold at/above the floor is
+// accepted. This is the shared helper both ConfigFromEnv and the --hold flag use,
+// so the flag can no longer silently bypass the drain-outliving requirement.
+func TestValidateHoldFloor(t *testing.T) {
+	if err := ValidateHold(1 * time.Second); err == nil {
+		t.Fatalf("hold below the floor must be rejected")
+	}
+	if err := ValidateHold(MinHold - time.Millisecond); err == nil {
+		t.Fatalf("hold just below MinHold must be rejected")
+	}
+	if err := ValidateHold(MinHold); err != nil {
+		t.Fatalf("hold at MinHold must be accepted, got %v", err)
+	}
+	if err := ValidateHold(5 * time.Minute); err != nil {
+		t.Fatalf("hold above the floor must be accepted, got %v", err)
 	}
 }
 

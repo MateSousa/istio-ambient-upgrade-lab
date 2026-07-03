@@ -112,6 +112,13 @@ func runLoad(ctx context.Context, args []string) {
 	fs.StringVar(&cfg.ReadinessAddr, "readiness-addr", cfg.ReadinessAddr, "readiness gate listen addr")
 	_ = fs.Parse(args)
 
+	// The --hold flag overwrites cfg.Hold after ConfigFromEnv validated it, so
+	// re-gate through the same floor here or a sub-drain --hold slips through.
+	if err := load.ValidateHold(cfg.Hold); err != nil {
+		fmt.Fprintf(os.Stderr, "load: %v\n", err)
+		os.Exit(2)
+	}
+
 	if err := load.RunLoad(ctx, cfg); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "load: %v\n", err)
 		os.Exit(1)

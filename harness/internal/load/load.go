@@ -51,6 +51,23 @@ import (
 // margin over the ~115s internal drain.
 const minHoldMS = 130000
 
+// MinHold is the validated floor for the held-connection duration, exported so
+// every operator entry point (ConfigFromEnv and the --hold CLI flag) gates
+// through the SAME check via ValidateHold. RunLoad itself stays floor-free so
+// hermetic tests can use sub-second holds.
+const MinHold = time.Duration(minHoldMS) * time.Millisecond
+
+// ValidateHold enforces the MinHold floor at the operator boundary: a hold
+// shorter than the ~115s ztunnel drain could never observe the reset it exists
+// to measure. It is the single source of truth for the floor check so the CLI
+// flag path cannot silently bypass what ConfigFromEnv enforces.
+func ValidateHold(d time.Duration) error {
+	if d < MinHold {
+		return fmt.Errorf("hold=%s is below the %s floor (held conns must outlive the ~115s ztunnel drain)", d, MinHold)
+	}
+	return nil
+}
+
 // Config carries the load generator's tunables. It is env-first (ConfigFromEnv)
 // but every field is settable directly, which is what lets the hermetic tests
 // use sub-second Hold/KeepAlive values that ConfigFromEnv would reject.
@@ -80,8 +97,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, errors.New("ECHO_ADDR must be set (same-node echo Pod IP:port)")
 	}
 	holdMS := envInt("HOLD_MS", minHoldMS)
-	if holdMS < minHoldMS {
-		return Config{}, fmt.Errorf("HOLD_MS=%d is below the %d ms floor (held conns must outlive the ~115s ztunnel drain)", holdMS, minHoldMS)
+	hold := time.Duration(holdMS) * time.Millisecond
+	if err := ValidateHold(hold); err != nil {
+		return Config{}, fmt.Errorf("HOLD_MS=%d invalid: %w", holdMS, err)
 	}
 	readiness := os.Getenv("READINESS_ADDR")
 	if readiness == "" {
@@ -90,7 +108,7 @@ func ConfigFromEnv() (Config, error) {
 	return Config{
 		Concurrency:   envInt("CONCURRENCY", 24),
 		LongFraction:  envFloat("LONG_FRACTION", 0.4),
-		Hold:          time.Duration(holdMS) * time.Millisecond,
+		Hold:          hold,
 		KeepAlive:     probeconn.EnvDurationMS("KEEPALIVE_MS", 20000),
 		ShortInterval: probeconn.EnvDurationMS("SHORT_INTERVAL_MS", 250),
 		Ramp:          probeconn.EnvDurationMS("RAMP_MS", 10000),
@@ -264,6 +282,13 @@ func RunLoad(ctx context.Context, cfg Config) error {
 // worker's very first successful dial, to drive the honest readiness gate.
 func longWorker(ctx context.Context, cfg Config, node string, emit probeconn.EmitFunc, onFirstConn func()) {
 	firstDone := false
+	// One id sequence for the worker's whole lifetime, created ONCE here and
+	// reused across every Hold session (mirroring the probe's never-resetting
+	// heldConnLoop). If seq were re-created per session, each Hold cycle would
+	// restart ids at "<node>-held-1" and collide across sessions - the analyzer
+	// keys its global reconnect/window maps on connId, so reused ids corrupt
+	// RecoverySeconds and can false-FAIL (ReasonSameConnTwoWindows).
+	seq := probeconn.NewHeldConnSeq(node)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -271,13 +296,13 @@ func longWorker(ctx context.Context, cfg Config, node string, emit probeconn.Emi
 		// Bound one held session by Hold; a session ends either on a deliberate
 		// Hold/ctx close (silent) or keeps recovering in-place across real breaks.
 		sessCtx, sessCancel := context.WithTimeout(ctx, cfg.Hold)
-		heldSession(sessCtx, cfg, node, emit, &firstDone, onFirstConn)
+		heldSession(sessCtx, cfg, seq, emit, &firstDone, onFirstConn)
 		sessCancel()
 		if ctx.Err() != nil {
 			return
 		}
 		// Hold elapsed: the deliberate close already happened silently inside the
-		// session; start a fresh session (new id lineage) to sustain concurrency.
+		// session; the shared seq keeps ids monotonically unique into the next one.
 	}
 }
 
@@ -286,8 +311,7 @@ func longWorker(ctx context.Context, cfg Config, node string, emit probeconn.Emi
 // prior (reset) id, trickle keepalives, and on a deliberate sessCtx close return
 // silently. A real break (RST/EOF) is emitted by HoldAndTrickle and the loop
 // reconnects within the same session.
-func heldSession(sessCtx context.Context, cfg Config, node string, emit probeconn.EmitFunc, firstDone *bool, onFirstConn func()) {
-	seq := probeconn.NewHeldConnSeq(node)
+func heldSession(sessCtx context.Context, cfg Config, seq *probeconn.HeldConnSeq, emit probeconn.EmitFunc, firstDone *bool, onFirstConn func()) {
 	for {
 		if sessCtx.Err() != nil {
 			return
