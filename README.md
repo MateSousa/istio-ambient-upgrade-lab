@@ -193,6 +193,7 @@ make verify                      # re-run the convergence + datapath + data-path
 make down                        # delete the kind cluster
 make argocd-ui                   # port-forward the ArgoCD UI (pw: make argocd-password)
 make scan                        # hygiene: fail on any proprietary identifier
+make install-hooks               # opt-in: run the hygiene scan on every git push
 ```
 
 `make up` runs, in order: preflight (asserts `GHCR_TOKEN`, docker) → `kind
@@ -270,6 +271,32 @@ Each gate prints `PASS`/`FAIL`; a single failure fails the run.
     - Grafana `/api/health` is ok, both datasources are provisioned, and the
       starter dashboard is present.
 13. The hygiene scan finds no proprietary identifiers.
+
+## Hygiene scanner (no proprietary identifiers)
+
+This is a genericised, public reproduction of an internal upgrade drill, so a
+scanner guards the tree against leaking any private fingerprint — an internal
+org name, the internal AWS account IDs, an internal container-registry host, an
+internal collector FQDN/namespace, or an IRSA ARN shape. It is a tested Go deep
+module (`harness/internal/scan`) run via `harness scan`; the shell entry points
+are thin wrappers so there is a single implementation that cannot drift.
+
+- `make scan` (and the hygiene gate inside `make verify`) runs it. It exits
+  **0** on a clean tree and **non-zero**, printing every `file:line`, on any hit
+  or if it cannot run (fail-closed: it never passes an unscanned tree).
+- By default it scans the **git-tracked** file set — exactly what a push would
+  publish — and automatically falls back to walking the working tree when git is
+  absent (tarball/CI). `harness scan --worktree` forces the walk and includes
+  untracked files.
+- The patterns live in one fragment-assembled rule file that the scan excludes
+  from itself (a deliberately narrow exclusion — a real secret in any other path
+  is still caught). Every other file, including the tests, is fingerprint-free:
+  the positive fixture corpus is assembled from fragments at test time into a
+  temp dir, so no identifier is ever written to a committed file on disk.
+- `make install-hooks` points `core.hooksPath` at `.githooks`, whose `pre-push`
+  hook runs the scan and blocks a push on any finding. It is **opt-in per clone**
+  and bypassable with `git push --no-verify`; `make scan` and CI are the real
+  guarantee.
 
 ## `targetRevision` is pinned here (on purpose)
 
@@ -405,6 +432,8 @@ scripts/                 up / down / publish-chart / build-app-images / gen-scra
                          drain / patch / atomic-sync / minor / reset
 Makefile
 harness/                 drop-measurement harness (Go); `harness next-version` is
-                         the single fresh-umbrella-version authority the scenarios call
+                         the single fresh-umbrella-version authority the scenarios call;
+                         internal/scan is the hygiene scanner (`harness scan`)
+.githooks/pre-push       opt-in pre-push hygiene gate (make install-hooks)
 
 ```

@@ -5,7 +5,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help up down publish-chart build-images verify verify-observability scan \
+.PHONY: help up down publish-chart build-images verify verify-observability scan install-hooks \
 	argocd-password argocd-ui grafana-ui prometheus-ui loki-ui \
 	harness-build harness-test measure load report \
 	scenario-patch scenario-drain scenario-atomic-sync scenario-minor scenario-reset \
@@ -35,6 +35,10 @@ verify-observability: ## Run only the observability gates (Prometheus/Loki/Grafa
 
 scan: ## Fail if any proprietary identifier leaked into the tree
 	scripts/no-identity-scan.sh
+
+install-hooks: ## Opt-in: route git hooks to .githooks (pre-push runs the hygiene scan)
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath -> .githooks (pre-push scan enabled; bypass a push with --no-verify)"
 
 harness-build: ## Build the drop-measurement harness binary (static, CGO off)
 	cd harness && CGO_ENABLED=0 go build ./...

@@ -16,6 +16,9 @@
 //	           (plus optional per-client observations). Exits 0 on any successful
 //	           render (PASS/FAIL/ERROR are report CONTENT), non-zero only on an
 //	           IO/decode/schemaVersion error.
+//	scan     - hygiene gate: walks the repo tree for proprietary fingerprints and
+//	           exits 0 clean / 1 on any finding (file:line printed) / 2 if the
+//	           scan could not run (fail closed). Runs pre-push and in verify.sh.
 //
 // The verdict logic lives in internal/measure (pure, hermetically tested); all
 // cluster/net/git/exec IO lives here and in internal/live.
@@ -58,6 +61,8 @@ func main() {
 		runNextVersion(args)
 	case "report":
 		runReport(args)
+	case "scan":
+		runScan(args)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -77,6 +82,7 @@ usage:
   harness measure [flags]      orchestrate a ztunnel upgrade and measure drops
   harness next-version [flags] print the next fresh umbrella chart version (single authority)
   harness report [flags]       render a Markdown PASS/FAIL report from a Result JSON
+  harness scan [flags]         hygiene gate: fail on any proprietary identifier (0 clean / 1 hit / 2 error)
 `)
 }
 
@@ -197,6 +203,22 @@ func runReport(args []string) {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "report: %v\n", err)
+	}
+	os.Exit(code)
+}
+
+// runScan wires the hygiene scanner. --repo-root points at the working copy to
+// scan (defaults to the current dir); --worktree forces a filesystem walk of the
+// working tree (including untracked files) instead of the git-tracked listing.
+func runScan(args []string) {
+	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	repoRoot := fs.String("repo-root", ".", "path to the lab repo working copy to scan")
+	worktree := fs.Bool("worktree", false, "force a filesystem walk of the working tree (scan untracked files too) instead of the git-tracked listing")
+	_ = fs.Parse(args)
+
+	code, err := live.RunScan(live.ScanConfig{RepoRoot: *repoRoot, Worktree: *worktree})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "scan: %v\n", err)
 	}
 	os.Exit(code)
 }
