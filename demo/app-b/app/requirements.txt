@@ -1,0 +1,8 @@
+# app-b runtime deps. psycopg[binary] ships prebuilt manylinux wheels for both
+# amd64 and arm64, so `pip install` never needs a C toolchain and the image
+# builds natively on Apple Silicon kind hosts.
+fastapi==0.115.6
+uvicorn==0.34.0
+sqlalchemy==2.0.36
+psycopg[binary]==3.2.3
+httpx==0.28.1

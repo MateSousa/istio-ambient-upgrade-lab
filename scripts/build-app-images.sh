@@ -13,6 +13,8 @@ CLUSTER_NAME="${CLUSTER_NAME:-istio-ambient-lab}"
 # name : version : build-context (each context holds its own Dockerfile)
 IMAGES=(
   "demo-app-a:0.1.0:demo/app-a/app"
+  "demo-app-b:0.1.0:demo/app-b/app"
+  "demo-app-c:0.1.0:demo/app-c/app"
   "harness:0.1.0:harness"
 )
 

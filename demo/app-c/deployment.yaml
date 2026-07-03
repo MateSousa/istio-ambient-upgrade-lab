@@ -1,0 +1,125 @@
+# app-c - the ambient-enrolled Go/pgx client and tail of the a->b->c chain
+# (app-b /chain -> app-c /query). Lives in demo-app (ambient), connects to
+# pgbouncer-writer over the mesh, holds its own pgxpool. The Service carries
+# istio.io/use-waypoint so east-west traffic to app-c is L7-routed through the
+# tenant waypoint (see demo/waypoint + the HTTPRoute/DestinationRule alongside).
+#
+# The image is built locally and kind-loaded (scripts/build-app-images.sh) - no
+# registry prefix and imagePullPolicy: IfNotPresent so the kubelet uses the
+# preloaded image instead of trying to pull it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-c
+  namespace: demo-app
+  labels:
+    app: app-c
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-c
+  template:
+    metadata:
+      labels:
+        app: app-c
+    spec:
+      # SOFT (preferred) anti-affinity only - same rationale as app-b: the
+      # verdict signal is the per-node probe/echo pairs, not the app pools, so we
+      # must NOT force the three apps onto distinct nodes (a REQUIRED rule could
+      # be unsatisfiable on a 3-worker cluster and leave app-c Pending). Prefer
+      # spreading off pgbouncer-writer and off the sibling apps.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: pgbouncer
+                    pgbouncer-role: writer
+                topologyKey: kubernetes.io/hostname
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["app-a", "app-b"]
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app-c
+          image: demo-app-c:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: DB_HOST
+              value: pgbouncer-writer
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: demo_app
+            - name: DB_NAME
+              value: demo
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-c-db
+                  key: DB_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 192Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-c
+  namespace: demo-app
+  labels:
+    app: app-c
+    # Enrol app-c in the tenant waypoint's L7 datapath. The value MUST equal the
+    # Gateway name (demo/waypoint/gateway.yaml -> tenant-waypoint); same
+    # namespace, so no namespace qualification is needed.
+    istio.io/use-waypoint: tenant-waypoint
+spec:
+  selector:
+    app: app-c
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

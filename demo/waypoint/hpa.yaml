@@ -1,0 +1,32 @@
+# HorizontalPodAutoscaler for the auto-managed tenant-waypoint Envoy Deployment.
+#
+# istiod names the auto-managed waypoint Deployment after the Gateway
+# (tenant-waypoint), so scaleTargetRef points at that name directly. We render
+# the HPA ourselves rather than using the upstream
+# autoscaling.istio.io/min-replicas annotation, which Istio 1.29's
+# gateway-controller does not honor (verified empirically in the source chart).
+#
+# minReplicas 2 keeps the L7 path up across a single-pod disruption; maxReplicas
+# 4 / 70% CPU are the real per-tenant values.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tenant-waypoint
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/component: tenant-waypoint
+    app.kubernetes.io/managed-by: raw-manifest
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tenant-waypoint
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

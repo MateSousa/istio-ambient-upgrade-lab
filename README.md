@@ -8,14 +8,20 @@ private OCI registry, and reconciled by **ArgoCD** through an **app-of-apps**
 that points back at this repo.
 
 **Slice 1** brought the mesh up and proved a test pod is genuinely enrolled in
-the ztunnel datapath. **Slice 2 (this) adds the data path**: an out-of-mesh
-Postgres (the Aurora analog), an in-mesh **pgbouncer** writer/reader pair
-configured with the real nonprod knobs, and **app-a** (Node/TypeORM) holding a
-long-lived, in-mesh, pgbouncer-fronted connection — the exact flow the upgrade
-drill exists to protect. Later slices add a waypoint, a load generator, and the
-actual upgrade drop-measurement. Everything here is pure upstream mechanics —
-`docker.io/istio`, `docker.io/library/postgres`, `docker.io/edoburu/pgbouncer`,
-`docker.io/library/node` images, upstream Helm charts, zero private identifiers.
+the ztunnel datapath. **Slice 2** added the data path (out-of-mesh Postgres +
+in-mesh pgbouncer + **app-a** Node/TypeORM). Slices 3–4 added the
+drop-measurement harness and the concurrent load generator. **Slice 5 (this)
+thickens the workload to the full topology**: **app-b** (Python/SQLAlchemy +
+psycopg3) and **app-c** (Go/pgx) join app-a — three deliberately-distinct pool
+implementations, each ambient-enrolled and each holding its own pgbouncer-fronted
+pool — chained `app-a → app-b → app-c` over HTTP through the mesh, plus a
+**tenant waypoint** (L7 Envoy) that east-west traffic to app-b/app-c is routed
+through. This exercises both the L4 (ztunnel) and L7 (waypoint) paths so a later
+upgrade run can measure per-client RST/recovery differences. Everything here is
+pure upstream mechanics — `docker.io/istio`, `docker.io/library/postgres`,
+`docker.io/edoburu/pgbouncer`, `docker.io/library/{node,python,golang}`, the
+upstream Istio Helm charts, and the upstream **Gateway API v1.2.1** standard CRDs
+— zero private identifiers.
 
 ## What it builds
 
@@ -23,13 +29,29 @@ actual upgrade drop-measurement. Everything here is pure upstream mechanics —
 kind (1 control-plane + 3 workers, k8s 1.33.7 pinned by digest)
   └── ArgoCD (vendored, pinned v3.3.12)
         └── demo-root  (app-of-apps, watches apps/)
-              ├── mesh         -> umbrella istio chart 1.0.0 from GHCR OCI (istio-system)
-              ├── demo-hello   -> ambient-enrolled demo namespace + hello pod (demo-app)
+              ├── gateway-api-crds -> upstream Gateway API v1.2.1 standard CRDs (wave -1)
+              ├── mesh         -> umbrella istio chart 1.0.0 from GHCR OCI (wave 0)
+              ├── demo-hello   -> ambient-enrolled demo namespace + hello pod (wave 1)
               ├── data         -> postgres (demo-data, OUT of mesh) + pgbouncer
-              │                   writer/reader pools (demo-app, in mesh)
-              └── app-a        -> ambient Node/TypeORM client holding a pooled,
-                                  cross-node app-a -> pgbouncer connection (demo-app)
+              │                   writer/reader pools (demo-app, in mesh) (wave 2)
+              ├── waypoint     -> tenant-waypoint L7 Envoy: Gateway + HPA + PDB (wave 3)
+              ├── probe / load -> per-node drop-measurement probes + load gen (wave 3/4)
+              ├── app-a        -> ambient Node/TypeORM client, chain head (wave 4)
+              ├── app-b        -> ambient Python/SQLAlchemy client, chain middle (wave 4)
+              └── app-c        -> ambient Go/pgx client, chain tail (wave 4)
 ```
+
+The three services chain `app-a → app-b → app-c` over HTTP through the mesh: the
+load gen drives app-a's `GET /chain`, which does its own SELECT then calls
+app-b's `/chain`, which does its own SELECT then calls app-c's `/query`. Every
+east-west hop is L4 + mTLS via ztunnel and L7 via the **tenant waypoint** (HBONE
+listener `15008`, `for: service`, HPA min 2 / max 4 / 70% CPU, PDB
+`minAvailable: 1`, and per-upstream DestinationRules: `idleTimeout 55s`,
+`maxRequestsPerConnection 1000`, LEAST_REQUEST, outlier detection). app-b/app-c
+Services carry `istio.io/use-waypoint: tenant-waypoint` (value == the Gateway
+name) and each has a GAMMA HTTPRoute attaching it to the waypoint. app-b/app-c
+use **soft** (preferred) anti-affinity only — app-a keeps its required rule; the
+verdict signal is the per-node probe/echo pairs, not the app pools.
 
 The drop-relevant path is `app-a -> pgbouncer` (in mesh, carried over HBONE by
 ztunnel) and `pgbouncer -> postgres` (out of mesh, plaintext) — matching
@@ -116,7 +138,24 @@ Each gate prints `PASS`/`FAIL`; a single failure fails the run.
     - `pool_mode=transaction` (live `SHOW CONFIG`) and
       `terminationGracePeriodSeconds=150` on both pools.
     - `app-a` and `pgbouncer-writer` are on **different** nodes (anti-affinity).
-11. The hygiene scan finds no proprietary identifiers.
+11. **Topology gates** (`scripts/verify-topology.sh`):
+    - `GatewayClass/istio-waypoint` is **Accepted** (the CRD-registration gate;
+      `scripts/ensure-gatewayclass.sh` rolls istiod if an incremental apply left
+      it unregistered).
+    - `app-b` + `app-c` are enrolled in their nodes' ztunnel datapath, and each
+      serves `/readyz` + `/query` with a `widgets` row.
+    - both are persistent `demo_app` clients in pgbouncer (`SHOW CLIENTS` by
+      `application_name`) — each holds its own pool.
+    - `app-a` `GET /chain` returns rows stitched from a → b → c.
+    - the Gateway `tenant-waypoint` is **Programmed=True** (what ArgoCD's Gateway
+      health keys on) and its auto-managed Envoy Deployment has ≥ 2 replicas.
+    - `app-b` + `app-c` Services carry `istio.io/use-waypoint` == the Gateway name.
+    - the per-upstream DestinationRules exist with the `55s`/`1000`/LEAST_REQUEST
+      timeouts.
+    - **L7 traversal proof:** the waypoint's `istio_requests_total` increments
+      when `/chain` is driven (port-forward to the waypoint's `15020` metrics).
+    - Postgres is **still** out of mesh (its IP absent from every ztunnel dump).
+12. The hygiene scan finds no proprietary identifiers.
 
 ## `targetRevision` is pinned here (on purpose)
 
@@ -159,15 +198,22 @@ gitops/argocd/
   install/               vendored ArgoCD install.yaml (v3.3.12) + OCI repo-secret template
   root-app-of-apps.yaml  demo-root Application (watches apps/)
 apps/
-  mesh/                  mesh.yaml (umbrella) + demo-hello.yaml (sync-wave 1)
-  data/data.yaml         postgres + pgbouncer child app (sync-wave 1)
-  apps/app-a.yaml        app-a child app (sync-wave 2)
+  mesh/                  gateway-api-crds.yaml (wave -1) + mesh.yaml (0) + demo-hello.yaml (1)
+  data/data.yaml         postgres + pgbouncer child app (wave 2)
+  apps/waypoint.yaml     tenant-waypoint child app (wave 3)
+  apps/{app-a,app-b,app-c}.yaml  the three chained clients (wave 4)
+  apps/{probe,load}.yaml drop-measurement probe (wave 3) + load gen (wave 4)
   observability/         .gitkeep placeholder for a later slice
 demo/hello/              ambient-enrolled namespace + hello Deployment + Service
 demo/data/              demo-data namespace + postgres + pgbouncer writer/reader
+demo/gateway-api/        vendored upstream Gateway API v1.2.1 standard CRDs
+demo/waypoint/           tenant-waypoint Gateway + HPA + PDB (+ telemetry.yaml.disabled)
 demo/app-a/             app-a manifests (top level) + Node build context (app/)
+demo/app-b/             app-b manifests + route/DR + Python build context (app/)
+demo/app-c/             app-c manifests + route/DR + Go build context (app/)
 kind/cluster.yaml        1 control-plane + 3 workers, k8s 1.33.7 by digest
 scripts/                 up / down / publish-chart / build-app-images / gen-scram /
-                         wait-mesh / verify / verify-data / no-identity-scan
+                         wait-mesh / ensure-gatewayclass / verify / verify-data /
+                         verify-topology / no-identity-scan
 Makefile
 ```

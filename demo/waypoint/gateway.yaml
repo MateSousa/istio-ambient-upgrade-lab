@@ -1,0 +1,33 @@
+# tenant-waypoint - the L7 Envoy for the demo-app namespace, genericized from a
+# real per-tenant waypoint Helm chart (stripped of all tenant/client identity).
+# Raw manifests (no Helm) so the lab stays self-contained.
+#
+# The Gateway with gatewayClassName: istio-waypoint tells istiod to auto-manage
+# an Envoy Deployment (named after the Gateway) that terminates HBONE and applies
+# L7 policy (HTTPRoutes + DestinationRules) to traffic addressed to Services in
+# this namespace that carry istio.io/use-waypoint: tenant-waypoint (app-b, app-c).
+#
+# istio.io/waypoint-for: service  -> handle traffic to Services (not workloads).
+# Listener "mesh" on 15008 protocol HBONE is the standard ambient waypoint listener.
+#
+# DELIBERATELY OMITTED this slice: spec.infrastructure.parametersRef + its
+# rollout-strategy ConfigMap (the maxUnavailable/maxSurge control that gives the
+# waypoint Deployment its zero-503 rolling-update property). That is the subject
+# of the waypoint-rollout slice (8/10) and is not needed to prove L7 traversal
+# here, so it is left out to keep this slice focused. Note (per CONTEXT glossary):
+# the waypoint's zero-503 property depends on that Deployment strategy + proxyv2
+# preStop drain, NOT on the PDB below, and waypoints roll mesh-wide at once.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: tenant-waypoint
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/component: tenant-waypoint
+    app.kubernetes.io/managed-by: raw-manifest
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+    - name: mesh
+      port: 15008
+      protocol: HBONE

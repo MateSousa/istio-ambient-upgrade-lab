@@ -18,6 +18,13 @@ kubeconfig
 demo/app-a/app/node_modules/
 demo/app-a/app/dist/
 
+# app-b Python bytecode caches (produced by py_compile / import).
+demo/app-b/app/__pycache__/
+*.pyc
+
+# app-c Go build output (produced by `go build`).
+demo/app-c/app/app-c
+
 # harness build output + persisted measurement result.
 harness/bin/
 results.json

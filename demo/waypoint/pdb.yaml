@@ -1,0 +1,26 @@
+# PodDisruptionBudget for the auto-managed tenant-waypoint Envoy Deployment.
+# Selects on the label istiod applies to the auto-generated waypoint pods
+# (gateway.networking.k8s.io/gateway-name: tenant-waypoint).
+#
+# Kept for parity with the real per-tenant waypoint. minAvailable 1 stops a node
+# drain / Karpenter consolidation from evicting the last waypoint pod at once.
+#
+# IMPORTANT (per CONTEXT glossary, "Waypoint is protected by its PDB": FALSE):
+# this PDB does NOT gate the waypoint Deployment's OWN rolling update. A PDB
+# gates voluntary EVICTIONS, not a Deployment rolling its own pods. The waypoint's
+# zero-503 property during an upgrade depends on the Deployment's
+# maxUnavailable/maxSurge + the proxyv2 preStop drain (deferred to slice 8/10),
+# and waypoints roll mesh-wide at once, not per-node.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tenant-waypoint
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/component: tenant-waypoint
+    app.kubernetes.io/managed-by: raw-manifest
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: tenant-waypoint

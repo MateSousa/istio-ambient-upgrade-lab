@@ -1,0 +1,38 @@
+# app-c - the ambient-enrolled Go/pgx client, tail of the a->b->c chain.
+#
+# sync-wave "4": after the data path (wave 2) so pgbouncer-writer exists, and
+# after the tenant waypoint (wave 3) so the Gateway is Programmed before app-c's
+# Service (which carries istio.io/use-waypoint) starts L7-routing through it.
+# app-c's HTTPRoute + DestinationRule live in demo/app-c too, so they sync on
+# this same wave as the Service they reference.
+#
+# directory.recurse is false: demo/app-c holds the k8s manifests at its top level
+# (deployment/secret/route) and the Go build context under demo/app-c/app/;
+# recurse:false keeps ArgoCD from descending into app/ (go.mod etc.).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-c
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: demo/app-c
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

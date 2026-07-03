@@ -1,0 +1,33 @@
+# tenant-waypoint tracing Telemetry — RENDERED BUT DISABLED THIS SLICE.
+#
+# The `.disabled` extension keeps this out of the applied set: the waypoint
+# ArgoCD Application (apps/apps/waypoint.yaml) reads demo/waypoint with
+# directory.recurse:false, which only picks up *.yaml/*.yml/*.json, so this file
+# is intentionally NOT synced.
+#
+# DEVIATION FROM THE ISSUE AC ("tracing 100%"): this manifest targets the `otel`
+# extension provider, but NO otel provider exists in the mesh yet — the istio
+# umbrella chart (charts/istio) does not declare meshConfig.extensionProviders,
+# and there is no collector to receive spans. Applying a Telemetry CR that names
+# a non-existent provider is at best a no-op and at worst logs errors in istiod.
+# So it is rendered structurally (so the shape is reviewable and the enable is a
+# one-line change) but left disabled. ENABLE IT in the observability slice, once
+# that slice adds the `otel` extensionProvider + a collector: drop the `.disabled`
+# suffix (and, if kept in this directory, the waypoint app will pick it up).
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: tenant-waypoint
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/component: tenant-waypoint
+    app.kubernetes.io/managed-by: raw-manifest
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: tenant-waypoint
+  tracing:
+    - providers:
+        - name: otel
+      randomSamplingPercentage: 100

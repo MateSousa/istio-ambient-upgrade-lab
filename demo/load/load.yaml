@@ -11,8 +11,10 @@
 #     reconnect carrying the reset conn's id when the drain RSTs them;
 #   - short-lived workers churn NEW connections, emitting ONLY the
 #     new-connection-safety signal (NewConnAttemptOK/Fail).
-# A THIRD, NON-VERDICT path drives realistic app-a GET /query traffic (fresh TCP
-# per request, rate-limited by MAX_RPS); its failures go to a stderr diagnostic
+# A THIRD, NON-VERDICT path drives realistic app-a GET /chain traffic (fresh TCP
+# per request, rate-limited by MAX_RPS). /chain fans out app-a -> app-b -> app-c
+# through the mesh (L4 + mTLS via ztunnel, L7 via the tenant waypoint), so this
+# path exercises the full topology; its failures go to a stderr diagnostic
 # counter ONLY and can never reach the drop verdict.
 #
 # Distinct from the probe: pods are labelled `app: load` with a `load-node`
@@ -61,7 +63,7 @@ spec:
             - name: ECHO_ADDR
               value: "echo-worker1:9000"
             - name: APPA_URL
-              value: "http://app-a:3000/query"
+              value: "http://app-a:3000/chain"
             - name: CONCURRENCY
               value: "24"
             - name: LONG_FRACTION
@@ -155,7 +157,7 @@ spec:
             - name: ECHO_ADDR
               value: "echo-worker2:9000"
             - name: APPA_URL
-              value: "http://app-a:3000/query"
+              value: "http://app-a:3000/chain"
             - name: CONCURRENCY
               value: "24"
             - name: LONG_FRACTION
@@ -244,7 +246,7 @@ spec:
             - name: ECHO_ADDR
               value: "echo-worker3:9000"
             - name: APPA_URL
-              value: "http://app-a:3000/query"
+              value: "http://app-a:3000/chain"
             - name: CONCURRENCY
               value: "24"
             - name: LONG_FRACTION

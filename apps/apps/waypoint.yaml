@@ -1,0 +1,43 @@
+# waypoint - the tenant-waypoint L7 Envoy (Gateway + HPA + PDB) for demo-app.
+#
+# sync-wave "3": AFTER the ambient demo-app namespace (demo-hello, wave 1) and
+# the data path (wave 2) exist, and BEFORE the apps (app-a/b/c, wave 4). The
+# Gateway's auto-managed Envoy Deployment (min 2 via the HPA) must be up and the
+# Gateway Programmed=True before the apps' Services (which carry
+# istio.io/use-waypoint) start sending L7 traffic through it.
+#
+# The HTTPRoutes + DestinationRules that attach app-b/app-c to this waypoint are
+# NOT here - they live alongside their Services in demo/app-b and demo/app-c so
+# they sync on wave 4 with the Services they parentRef (a GAMMA route to a
+# not-yet-existent Service would otherwise sit un-Programmed). istiod recomputes
+# route status continuously, so they attach as soon as the Services appear.
+#
+# directory.recurse is false: demo/waypoint holds gateway/hpa/pdb at top level;
+# telemetry.yaml.disabled is intentionally skipped (non-.yaml extension).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: waypoint
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: demo/waypoint
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

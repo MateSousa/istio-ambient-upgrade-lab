@@ -1,0 +1,139 @@
+# app-b - the ambient-enrolled Python/SQLAlchemy(+psycopg3) client. Lives in
+# demo-app (ambient), connects to pgbouncer-writer over the mesh, holds its own
+# pgbouncer-fronted QueuePool, and sits in the middle of the a->b->c chain
+# (app-a -> app-b /chain -> app-c /query). The Service carries
+# istio.io/use-waypoint so east-west traffic to app-b is L7-routed through the
+# tenant waypoint (see demo/waypoint + the HTTPRoute/DestinationRule alongside).
+#
+# The image is built locally and kind-loaded (scripts/build-app-images.sh) - no
+# registry prefix and imagePullPolicy: IfNotPresent so the kubelet uses the
+# preloaded image instead of trying to pull it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-b
+  namespace: demo-app
+  labels:
+    app: app-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-b
+  template:
+    metadata:
+      labels:
+        app: app-b
+    spec:
+      # SOFT (preferred) anti-affinity only. Unlike app-a (which uses a REQUIRED
+      # rule to force a cross-node app-a -> pgbouncer hop), the verdict signal in
+      # this lab is the per-node probe/echo pairs, NOT the app pools - so we must
+      # NOT force all three apps onto distinct nodes (a REQUIRED rule vs
+      # pgbouncer + the other apps could be unsatisfiable on a 3-worker cluster
+      # and leave app-b Pending). Prefer spreading off pgbouncer-writer and off
+      # the sibling apps; let the scheduler co-locate if it must.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: pgbouncer
+                    pgbouncer-role: writer
+                topologyKey: kubernetes.io/hostname
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["app-a", "app-c"]
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app-b
+          image: demo-app-b:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: DB_HOST
+              value: pgbouncer-writer
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: demo_app
+            - name: DB_NAME
+              value: demo
+            - name: APPC_URL
+              value: "http://app-c:8080/query"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-b-db
+                  key: DB_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 192Mi
+          # Startup gate holds liveness/readiness off (30 x 5s = 150s slack)
+          # while the DB connect loop backs off and retries, so a slow-to-connect
+          # pod is never restarted mid-startup.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-b
+  namespace: demo-app
+  labels:
+    app: app-b
+    # Enrol app-b in the tenant waypoint's L7 datapath. The value MUST equal the
+    # Gateway name (demo/waypoint/gateway.yaml -> tenant-waypoint); same
+    # namespace, so no namespace qualification is needed.
+    istio.io/use-waypoint: tenant-waypoint
+spec:
+  selector:
+    app: app-b
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

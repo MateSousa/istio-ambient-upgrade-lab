@@ -1,11 +1,14 @@
 # load - the per-node concurrent load generators (slice 4).
 #
-# sync-wave "3": alongside app-a and the probe, after the ambient demo-app
-# namespace (wave 1) exists so these pods enrol in the datapath and the per-node
-# echo Services (from demo/probe) they dial are present. Like the probe, the
-# harness image is built and kind-loaded before the app-of-apps syncs
-# (scripts/build-app-images.sh, imagePullPolicy: IfNotPresent, no registry
-# prefix), so wave-3 finds it present.
+# sync-wave "4": after the ambient demo-app namespace (wave 1) exists so these
+# pods enrol in the datapath and the per-node echo Services (from demo/probe)
+# they dial are present. Bumped from wave 3 to 4 in slice 5 so the load gen
+# starts AFTER app-a/app-b/app-c (wave 4) and the tenant waypoint (wave 3) are
+# up - the non-verdict app-a traffic now drives GET /chain (app-a -> app-b ->
+# app-c), so app-a and its chain peers should be Ready before the load ramps.
+# Like the probe, the harness image is built and kind-loaded before the
+# app-of-apps syncs (scripts/build-app-images.sh, imagePullPolicy: IfNotPresent,
+# no registry prefix), so wave-4 finds it present.
 #
 # directory.recurse is false: demo/load holds only the flat load.yaml manifest;
 # there is nothing to descend into.
@@ -15,7 +18,7 @@ metadata:
   name: load
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

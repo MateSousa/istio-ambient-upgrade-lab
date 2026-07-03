@@ -1,0 +1,40 @@
+# gateway-api-crds - the vendored upstream Gateway API v1.2.1 STANDARD-channel
+# CRDs (GatewayClass, Gateway, GRPCRoute, HTTPRoute, ReferenceGrant).
+#
+# sync-wave "-1": BEFORE the mesh umbrella (wave 0). istiod registers the
+# istio-waypoint GatewayClass and starts reconciling Gateways/HTTPRoutes only if
+# these CRDs already exist when it boots - so they must land first. On a FRESH
+# `make up` that ordering is enough. On an INCREMENTAL apply to an already-running
+# slice-1-4 cluster (istiod already up without these CRDs), istiod may not
+# register the GatewayClass until restarted; scripts/ensure-gatewayclass.sh
+# (invoked from up.sh) handles that by rolling istiod if the class is not
+# Accepted in time. verify-topology.sh gates on GatewayClass/istio-waypoint Accepted.
+#
+# ServerSideApply=true: the CRDs are large; client-side apply would blow the
+# last-applied-configuration annotation size limit.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-api-crds
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: demo/gateway-api
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

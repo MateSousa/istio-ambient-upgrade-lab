@@ -157,6 +157,14 @@ else
   fail "one or more data-path gates failed (see verify-data.sh output above)"
 fi
 
+# ------------------------------------------------------- topology gates -------
+echo "== gate: topology (app-b + app-c + tenant waypoint L7) =="
+if scripts/verify-topology.sh; then
+  pass "topology gates (see verify-topology.sh output above)"
+else
+  fail "one or more topology gates failed (see verify-topology.sh output above)"
+fi
+
 # ------------------------------------------------------- hygiene re-scan ------
 echo "== gate: no proprietary identifiers =="
 if scripts/no-identity-scan.sh >/dev/null 2>&1; then

@@ -65,6 +65,13 @@ kubectl apply -f "${ROOT_APP}"
 echo "==> wait for mesh to converge"
 scripts/wait-mesh.sh
 
+echo "==> ensure istio-waypoint GatewayClass is Accepted (roll istiod if needed)"
+# The Gateway API CRDs land via ArgoCD (wave -1) before istiod (wave 0), so a
+# fresh cluster registers the class on boot. On an incremental apply to an
+# already-running slice-1-4 cluster, istiod may need a restart to pick up the
+# newly-added CRDs - this helper handles that.
+scripts/ensure-gatewayclass.sh
+
 echo "==> verify"
 scripts/verify.sh
 
