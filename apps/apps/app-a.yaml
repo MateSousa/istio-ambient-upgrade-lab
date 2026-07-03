@@ -1,6 +1,6 @@
 # app-a - the ambient-enrolled Node/TypeORM client.
 #
-# sync-wave "2": after the data app (wave 1) is Healthy, so pgbouncer-writer
+# sync-wave "3": after the data app (wave 2) is Healthy, so pgbouncer-writer
 # pods already exist when app-a is scheduled (its REQUIRED anti-affinity is
 # evaluated against them) and Postgres is ready to serve /readyz + /query.
 #
@@ -14,7 +14,7 @@ metadata:
   name: app-a
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-wave: "3"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

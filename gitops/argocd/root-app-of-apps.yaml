@@ -1,8 +1,8 @@
 # Root app-of-apps. ArgoCD watches this repo's apps/ directory (recursively) and
-# treats every Application manifest it finds there as a child app. In this slice
-# only apps/mesh/ is populated (the mesh umbrella + the demo workload); the
-# data/ apps/ observability/ directories hold a .gitkeep placeholder and are
-# wired up by later slices.
+# treats every Application manifest it finds there as a child app. apps/mesh/
+# (the mesh umbrella + the demo workload), apps/data/ (Postgres + pgbouncer) and
+# apps/apps/ (app-a) are populated; the observability/ directory holds a .gitkeep
+# placeholder and is wired up by a later slice.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

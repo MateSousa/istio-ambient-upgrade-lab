@@ -1,14 +1,15 @@
 # kind cluster for the Istio ambient upgrade lab.
 #
-# Topology: 1 control-plane + 3 workers. Two workers is the minimum that makes
-# per-node ztunnel/CNI DaemonSet behaviour observable (a workload on one node,
-# its ztunnel rolling independently of the other node); the data slice adds a
-# third so app-a's REQUIRED anti-affinity against the 2-replica pgbouncer-writer
-# pool is satisfiable (the pool occupies at most 2 nodes, always leaving one
-# free for app-a) - guaranteeing a deterministic cross-node app-a -> pgbouncer
-# HBONE connection. Add workers by copying a `- role: worker` line; the
-# DaemonSet gates in verify.sh are status-based, so they adapt to any node count
-# without edits.
+# Topology: 1 control-plane + 3 workers. Three workers is the minimum this lab
+# needs: app-a's REQUIRED anti-affinity forbids it from sharing a node with any
+# of the 2 pgbouncer-writer replicas, so with the writer pool occupying up to 2
+# nodes there must be a 3rd left free for app-a - guaranteeing a deterministic
+# cross-node app-a -> pgbouncer HBONE connection. (Two workers already suffice
+# for the mesh slice alone: they make per-node ztunnel/CNI DaemonSet behaviour
+# observable - a workload on one node, its ztunnel rolling independently of the
+# other - but cannot satisfy app-a's anti-affinity against a 2-replica writer
+# pool.) Add workers by copying a `- role: worker` line; the DaemonSet gates in
+# verify.sh are status-based, so they adapt to any node count without edits.
 #
 # Node image is pinned BY DIGEST to Kubernetes v1.33.7, the 1.33 image published
 # for kind v0.31.0. Rationale: Istio 1.29.2's supported Kubernetes matrix tops

@@ -63,10 +63,42 @@ app.get("/hold", async (_req: Request, res: Response) => {
   }
 });
 
+const CONNECT_RETRY_BASE_MS = Number(process.env.CONNECT_RETRY_BASE_MS ?? "500");
+const CONNECT_RETRY_MAX_MS = Number(process.env.CONNECT_RETRY_MAX_MS ?? "8000");
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+// Bring up the DataSource with indefinite exponential backoff. We deliberately
+// never exit on failure: the out-of-mesh Postgres / in-mesh pgbouncer path may
+// not be reachable yet at startup, and a self-inflicted CrashLoopBackOff would
+// confound the RST measurements this app exists to support. /readyz stays 503
+// (initialized === false) until the pool is actually up.
+async function connectWithRetry(): Promise<void> {
+  let delay = CONNECT_RETRY_BASE_MS;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await AppDataSource.initialize();
+      initialized = true;
+      console.log("data source initialized");
+      return;
+    } catch (err) {
+      console.error(
+        `data source init failed (attempt ${attempt}), retrying in ${delay}ms:`,
+        err
+      );
+      await sleep(delay);
+      delay = Math.min(delay * 2, CONNECT_RETRY_MAX_MS);
+    }
+  }
+}
+
 async function main(): Promise<void> {
-  await AppDataSource.initialize();
-  initialized = true;
-  console.log("data source initialized");
+  // Start serving immediately so /healthz (liveness) is up regardless of DB
+  // reachability. Readiness (/readyz) is separately gated on `initialized`.
+  app.listen(PORT, () => console.log(`demo-app-a listening on :${PORT}`));
+
+  await connectWithRetry();
 
   // Background keep-alive: hold a dedicated pooled client open and ping it on
   // an interval. This is the persistent, in-mesh app -> pgbouncer connection
@@ -81,8 +113,6 @@ async function main(): Promise<void> {
       console.error("keepalive query failed:", err);
     }
   }, KEEPALIVE_MS);
-
-  app.listen(PORT, () => console.log(`demo-app-a listening on :${PORT}`));
 }
 
 main().catch((err) => {

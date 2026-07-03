@@ -1,18 +1,20 @@
 # data - the out-of-mesh Postgres + the in-mesh pgbouncer writer/reader pools.
 #
-# sync-wave "1": same wave as demo-hello (which owns the ambient-labelled
-# demo-app namespace). destination.namespace is demo-data (created here via
+# sync-wave "2": AFTER demo-hello (wave 1), which CREATES the ambient-labelled
+# demo-app namespace that the pgbouncer objects here target. Same-wave sibling
+# Applications are not ordered, so data must sit on a later wave than demo-hello
+# to deterministically see demo-app already present (otherwise it fails until
+# self-heal). destination.namespace is demo-data (created here via
 # CreateNamespace); the pgbouncer objects carry an explicit demo-app namespace
-# and are applied there. If demo-app doesn't exist yet, ArgoCD retries until
-# demo-hello has created it - so pgbouncer pods are only ever created into an
-# already-ambient-labelled namespace and land in the datapath.
+# and are applied there - only ever into the already-ambient-labelled namespace,
+# so they land in the datapath.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: data
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "2"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
