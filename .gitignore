@@ -25,6 +25,11 @@ demo/app-b/app/__pycache__/
 # app-c Go build output (produced by `go build`).
 demo/app-c/app/app-c
 
-# harness build output + persisted measurement result.
+# harness build output + persisted measurement result / rendered report.
+# report.md and clients.json are unanchored (like results.json): `make report`
+# and `measure --out-clients` write them to the repo ROOT (../report.md,
+# ../clients.json), so anchored harness/ entries would NOT match them.
 harness/bin/
 results.json
+report.md
+clients.json
