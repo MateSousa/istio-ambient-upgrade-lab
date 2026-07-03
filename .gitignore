@@ -17,3 +17,7 @@ kubeconfig
 # app-a Node build artifacts (produced by npm ci / tsc / docker build).
 demo/app-a/app/node_modules/
 demo/app-a/app/dist/
+
+# harness build output + persisted measurement result.
+harness/bin/
+results.json

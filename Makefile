@@ -5,7 +5,8 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help up down publish-chart build-images verify scan argocd-password argocd-ui
+.PHONY: help up down publish-chart build-images verify scan argocd-password argocd-ui \
+	harness-build harness-test measure
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -28,6 +29,15 @@ verify: ## Run all convergence + datapath-enrollment gates
 
 scan: ## Fail if any proprietary identifier leaked into the tree
 	scripts/no-identity-scan.sh
+
+harness-build: ## Build the drop-measurement harness binary (static, CGO off)
+	cd harness && CGO_ENABLED=0 go build ./...
+
+harness-test: ## Run the hermetic harness unit tests (no cluster needed - CI entry)
+	cd harness && go test ./...
+
+measure: ## Live: fire the ztunnel upgrade trigger and measure drops (needs GHCR_TOKEN + cluster)
+	cd harness && go run ./cmd/harness measure --repo-root .. $(MEASURE_ARGS)
 
 argocd-password: ## Print the initial ArgoCD admin password
 	@kubectl -n argocd get secret argocd-initial-admin-secret \

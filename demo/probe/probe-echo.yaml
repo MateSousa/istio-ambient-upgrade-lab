@@ -1,0 +1,408 @@
+# Per-node probe + echo pairs - the drop-measurement data plane for slice 3.
+#
+# For each WORKER node there is a co-located pair, both pinned to that node:
+#   - an `echo` Pod (minimal TCP echo server, `harness echo`), and
+#   - a `probe` Pod (`harness probe`) that holds one long-lived connection to
+#     the SAME-NODE echo (via a per-node Service selecting only that node's echo
+#     Pod) and continuously opens new connections, emitting JSON-line ConnEvents.
+#
+# Because both endpoints sit on node N, the app-a -> pgbouncer style in-mesh hop
+# probe -> echo is mediated by exactly ONE ztunnel (node N's). When that ztunnel
+# rolls during an upgrade, only THIS node's held connection is at risk - which is
+# precisely the per-node blast radius the harness attributes. The probe mirrors
+# app-a's SELECT-1 keepalive (~20s) so the held connection outlives the ~115s
+# drain and is the connection observed to RST.
+#
+# The pairs are pinned by nodeName to kind's three workers (istio-ambient-lab-
+# worker{,2,3}); they match kind/cluster.yaml's 3 `- role: worker` entries. Add a
+# worker there and copy one pair block here. Namespace demo-app is already
+# ambient-enrolled (created by demo-hello), so these Pods land in the datapath.
+# PSA baseline suffices: the harness image is distroless-nonroot, drops all caps,
+# and runs read-only.
+#
+# ---------------------------------------------------------------- worker 1 ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-worker1
+  namespace: demo-app
+  labels:
+    app: echo
+    echo-node: worker1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+      echo-node: worker1
+  template:
+    metadata:
+      labels:
+        app: echo
+        echo-node: worker1
+    spec:
+      nodeName: istio-ambient-lab-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: echo
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["echo"]
+          env:
+            - name: ECHO_LISTEN
+              value: ":9000"
+          ports:
+            - containerPort: 9000
+              name: echo
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          readinessProbe:
+            tcpSocket:
+              port: echo
+            initialDelaySeconds: 2
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-worker1
+  namespace: demo-app
+  labels:
+    app: echo
+    echo-node: worker1
+spec:
+  type: ClusterIP
+  selector:
+    app: echo
+    echo-node: worker1
+  ports:
+    - name: echo
+      port: 9000
+      targetPort: echo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probe-worker1
+  namespace: demo-app
+  labels:
+    app: probe
+    probe-node: worker1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: probe
+      probe-node: worker1
+  template:
+    metadata:
+      labels:
+        app: probe
+        probe-node: worker1
+    spec:
+      nodeName: istio-ambient-lab-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["probe"]
+          env:
+            - name: ECHO_ADDR
+              value: "echo-worker1:9000"
+            - name: KEEPALIVE_MS
+              value: "20000"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+# ---------------------------------------------------------------- worker 2 ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-worker2
+  namespace: demo-app
+  labels:
+    app: echo
+    echo-node: worker2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+      echo-node: worker2
+  template:
+    metadata:
+      labels:
+        app: echo
+        echo-node: worker2
+    spec:
+      nodeName: istio-ambient-lab-worker2
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: echo
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["echo"]
+          env:
+            - name: ECHO_LISTEN
+              value: ":9000"
+          ports:
+            - containerPort: 9000
+              name: echo
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          readinessProbe:
+            tcpSocket:
+              port: echo
+            initialDelaySeconds: 2
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-worker2
+  namespace: demo-app
+  labels:
+    app: echo
+    echo-node: worker2
+spec:
+  type: ClusterIP
+  selector:
+    app: echo
+    echo-node: worker2
+  ports:
+    - name: echo
+      port: 9000
+      targetPort: echo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probe-worker2
+  namespace: demo-app
+  labels:
+    app: probe
+    probe-node: worker2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: probe
+      probe-node: worker2
+  template:
+    metadata:
+      labels:
+        app: probe
+        probe-node: worker2
+    spec:
+      nodeName: istio-ambient-lab-worker2
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["probe"]
+          env:
+            - name: ECHO_ADDR
+              value: "echo-worker2:9000"
+            - name: KEEPALIVE_MS
+              value: "20000"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+# ---------------------------------------------------------------- worker 3 ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-worker3
+  namespace: demo-app
+  labels:
+    app: echo
+    echo-node: worker3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+      echo-node: worker3
+  template:
+    metadata:
+      labels:
+        app: echo
+        echo-node: worker3
+    spec:
+      nodeName: istio-ambient-lab-worker3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: echo
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["echo"]
+          env:
+            - name: ECHO_LISTEN
+              value: ":9000"
+          ports:
+            - containerPort: 9000
+              name: echo
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          readinessProbe:
+            tcpSocket:
+              port: echo
+            initialDelaySeconds: 2
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-worker3
+  namespace: demo-app
+  labels:
+    app: echo
+    echo-node: worker3
+spec:
+  type: ClusterIP
+  selector:
+    app: echo
+    echo-node: worker3
+  ports:
+    - name: echo
+      port: 9000
+      targetPort: echo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probe-worker3
+  namespace: demo-app
+  labels:
+    app: probe
+    probe-node: worker3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: probe
+      probe-node: worker3
+  template:
+    metadata:
+      labels:
+        app: probe
+        probe-node: worker3
+    spec:
+      nodeName: istio-ambient-lab-worker3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["probe"]
+          env:
+            - name: ECHO_ADDR
+              value: "echo-worker3:9000"
+            - name: KEEPALIVE_MS
+              value: "20000"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

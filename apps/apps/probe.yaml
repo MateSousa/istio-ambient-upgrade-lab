@@ -1,0 +1,36 @@
+# probe - the per-node drop-measurement probe + echo pairs (slice 3).
+#
+# sync-wave "3": alongside app-a, after the ambient demo-app namespace (wave 1)
+# exists so these Pods enrol in the datapath. Like app-a, the harness image is
+# built and kind-loaded before the app-of-apps syncs (scripts/build-app-images.sh,
+# imagePullPolicy: IfNotPresent, no registry prefix), so wave-3 finds it present.
+#
+# directory.recurse is false: demo/probe holds only the flat probe-echo.yaml
+# manifest; there is nothing to descend into.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: probe
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: demo/probe
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
