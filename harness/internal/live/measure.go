@@ -33,6 +33,7 @@ type MeasureConfig struct {
 	Grace          time.Duration // ztunnel terminationGracePeriodSeconds (120s)
 	RecoveryBound  int           // recovery bound seconds (30)
 	JitterEps      float64       // jitter tolerance seconds (2)
+	OutClientsPath string        // per-client observations JSON dest ("" => producer disabled)
 }
 
 // DefaultMeasureConfig returns the standard measure settings.
@@ -59,7 +60,7 @@ func DefaultMeasureConfig() MeasureConfig {
 //
 // It returns the Result and a process exit code.
 func RunMeasure(ctx context.Context, cfg MeasureConfig) (model.Result, int, error) {
-	cs, dyn, err := NewClients()
+	cs, dyn, restCfg, err := NewClientsAndConfig()
 	if err != nil {
 		return model.Result{}, 3, fmt.Errorf("kube clients: %w", err)
 	}
@@ -90,6 +91,16 @@ func RunMeasure(ctx context.Context, cfg MeasureConfig) (model.Result, int, erro
 	events, err := collectEvents(ctx, cs, cfg.ProbeNamespace, runStart)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: collecting probe events: %v\n", err)
+	}
+
+	// Optional per-client observer (slice 7): only when --out-clients is set.
+	// It observes how app-a/b/c weathered the same roll and writes a side-car
+	// PerClientObservations JSON that `harness report --clients` renders. A
+	// producer error never fails the run - it is a secondary, non-verdict signal.
+	if cfg.OutClientsPath != "" {
+		if _, perr := ProduceClientObservations(ctx, cs, restCfg, dyn, watcher.Windows(), cfg); perr != nil {
+			fmt.Fprintf(os.Stderr, "warning: per-client observations: %v\n", perr)
+		}
 	}
 
 	acfg := model.DefaultConfig()

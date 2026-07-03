@@ -27,17 +27,25 @@ func restConfig() (*rest.Config, error) {
 // NewClients builds a typed clientset and a dynamic client from the resolved
 // rest config.
 func NewClients() (kubernetes.Interface, dynamic.Interface, error) {
+	cs, dyn, _, err := NewClientsAndConfig()
+	return cs, dyn, err
+}
+
+// NewClientsAndConfig is NewClients plus the resolved *rest.Config. The client
+// observer needs the rest config to open a SPDY pod-exec stream (SHOW CLIENTS /
+// /hold), which the typed and dynamic clients alone cannot provide.
+func NewClientsAndConfig() (kubernetes.Interface, dynamic.Interface, *rest.Config, error) {
 	cfg, err := restConfig()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	dyn, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return cs, dyn, nil
+	return cs, dyn, cfg, nil
 }

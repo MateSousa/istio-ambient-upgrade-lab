@@ -7,7 +7,7 @@ SHELL := /usr/bin/env bash
 
 .PHONY: help up down publish-chart build-images verify verify-observability scan \
 	argocd-password argocd-ui grafana-ui prometheus-ui loki-ui \
-	harness-build harness-test measure load
+	harness-build harness-test measure load report
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -45,6 +45,9 @@ measure: ## Live: fire the ztunnel upgrade trigger and measure drops (needs GHCR
 
 load: ## Run the concurrent load generator locally (ECHO_ADDR etc. via env/flags)
 	cd harness && go run ./cmd/harness load $(LOAD_ARGS)
+
+report: ## Render a Markdown PASS/FAIL report from a measure Result (REPORT_ARGS passthrough)
+	cd harness && go run ./cmd/harness report --in ../results.json --out ../report.md $(REPORT_ARGS)
 
 argocd-password: ## Print the initial ArgoCD admin password
 	@kubectl -n argocd get secret argocd-initial-admin-secret \

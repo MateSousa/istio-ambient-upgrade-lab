@@ -12,6 +12,10 @@
 //	           roll windows, collects probe events, runs the pure analyzer, and
 //	           prints/persists the machine-readable Result (schemaVersion
 //	           harness/v1). Exits 0 PASS / 1 FAIL / 2 ERROR.
+//	report   - renders a Markdown PASS/FAIL report from a measure Result JSON
+//	           (plus optional per-client observations). Exits 0 on any successful
+//	           render (PASS/FAIL/ERROR are report CONTENT), non-zero only on an
+//	           IO/decode/schemaVersion error.
 //
 // The verdict logic lives in internal/measure (pure, hermetically tested); all
 // cluster/net/git/exec IO lives here and in internal/live.
@@ -24,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/MateSousa/istio-ambient-upgrade-lab/harness/internal/live"
 	"github.com/MateSousa/istio-ambient-upgrade-lab/harness/internal/load"
@@ -49,6 +54,8 @@ func main() {
 		runLoad(ctx, args)
 	case "measure":
 		runMeasure(ctx, args)
+	case "report":
+		runReport(args)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -66,6 +73,7 @@ usage:
   harness probe                run the per-node probe (ECHO_ADDR, NODE_NAME, ...)
   harness load [flags]         run the concurrent load generator (ECHO_ADDR, ...)
   harness measure [flags]      orchestrate a ztunnel upgrade and measure drops
+  harness report [flags]       render a Markdown PASS/FAIL report from a Result JSON
 `)
 }
 
@@ -134,6 +142,7 @@ func runMeasure(ctx context.Context, args []string) {
 	fs.StringVar(&cfg.ZtunnelTo, "ztunnel-to", "1.29.5", "target ztunnel version (git-bump)")
 	fs.StringVar(&cfg.ChartVersionTo, "chart-version-to", "1.0.1", "umbrella chart version to publish (git-bump)")
 	fs.StringVar(&cfg.OutPath, "out", "-", "Result JSON destination ('-' => stdout)")
+	fs.StringVar(&cfg.OutClientsPath, "out-clients", "", "per-client observations JSON destination ('' => producer disabled)")
 	fs.StringVar(&cfg.ProbeNamespace, "probe-namespace", cfg.ProbeNamespace, "namespace holding the probe Pods")
 	fs.DurationVar(&cfg.Deadline, "deadline", cfg.Deadline, "observation window")
 	fs.IntVar(&cfg.RecoveryBound, "recovery-bound", cfg.RecoveryBound, "recovery bound seconds")
@@ -147,5 +156,24 @@ func runMeasure(ctx context.Context, args []string) {
 		fmt.Fprintf(os.Stderr, "measure: %v\n", err)
 	}
 	_ = res
+	os.Exit(code)
+}
+
+func runReport(args []string) {
+	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	in := fs.String("in", "results.json", "Result JSON input")
+	clients := fs.String("clients", "", "per-client observations JSON (optional)")
+	out := fs.String("out", "report.md", "Markdown destination ('-' => stdout)")
+	_ = fs.Parse(args)
+
+	code, err := live.RunReport(live.ReportConfig{
+		InPath:      *in,
+		ClientsPath: *clients,
+		OutPath:     *out,
+		GeneratedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "report: %v\n", err)
+	}
 	os.Exit(code)
 }

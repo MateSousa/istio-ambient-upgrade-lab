@@ -25,6 +25,8 @@ demo/app-b/app/__pycache__/
 # app-c Go build output (produced by `go build`).
 demo/app-c/app/app-c
 
-# harness build output + persisted measurement result.
+# harness build output + persisted measurement result / rendered report.
 harness/bin/
 results.json
+harness/report.md
+harness/clients.json
