@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -23,12 +25,13 @@ type ProbeConfig struct {
 	Node        string        // node this probe is pinned to (for event.Node)
 	KeepAlive   time.Duration // trickle/keepalive period on the held conn (~20s)
 	NewConnRate time.Duration // how often to dial a fresh probe connection
+	HealthAddr  string        // readiness health listen addr (opened after first held connect)
 	Out         io.Writer     // JSON-line ConnEvent sink (stdout in the Pod)
 }
 
 // ProbeConfigFromEnv builds a ProbeConfig from the probe Pod's environment:
 // ECHO_ADDR (required), NODE_NAME (downward API), KEEPALIVE_MS (default 20000),
-// NEWCONN_MS (default 2000).
+// NEWCONN_MS (default 2000), READINESS_ADDR (default ":8080").
 func ProbeConfigFromEnv() (ProbeConfig, error) {
 	addr := os.Getenv("ECHO_ADDR")
 	if addr == "" {
@@ -36,11 +39,16 @@ func ProbeConfigFromEnv() (ProbeConfig, error) {
 	}
 	keep := envDurationMS("KEEPALIVE_MS", 20000)
 	newc := envDurationMS("NEWCONN_MS", 2000)
+	health := os.Getenv("READINESS_ADDR")
+	if health == "" {
+		health = ":8080"
+	}
 	return ProbeConfig{
 		EchoAddr:    addr,
 		Node:        os.Getenv("NODE_NAME"),
 		KeepAlive:   keep,
 		NewConnRate: newc,
+		HealthAddr:  health,
 		Out:         os.Stdout,
 	}, nil
 }
@@ -69,37 +77,122 @@ func RunProbe(ctx context.Context, cfg ProbeConfig) error {
 		_ = enc.Encode(model.ConnEvent{Kind: kind, ConnID: connID, Node: cfg.Node, TS: time.Now().UTC()})
 	}
 
+	gate := newReadinessGate(cfg.HealthAddr)
+	defer gate.close()
+
 	go newConnLoop(ctx, cfg, emit)
-	heldConnLoop(ctx, cfg, emit)
+	heldConnLoop(ctx, cfg, emit, gate.signalReady)
 	return ctx.Err()
 }
 
 type emitFunc func(kind model.ConnEventKind, connID string)
 
+// readinessGate opens a TCP health listener the FIRST time signalReady is
+// called - i.e. only after the probe's held connection has actually been
+// established. A tcpSocket readinessProbe on that port therefore reports Ready
+// once the measured connection exists, not merely once the process started,
+// which is what waitProbesReady claims to confirm before firing the trigger.
+type readinessGate struct {
+	addr string
+	once sync.Once
+	mu   sync.Mutex
+	ln   net.Listener
+}
+
+func newReadinessGate(addr string) *readinessGate {
+	return &readinessGate{addr: addr}
+}
+
+func (g *readinessGate) signalReady() {
+	g.once.Do(func() {
+		ln, err := net.Listen("tcp", g.addr)
+		if err != nil {
+			log.Printf("probe: readiness listener on %s: %v", g.addr, err)
+			return
+		}
+		g.mu.Lock()
+		g.ln = ln
+		g.mu.Unlock()
+		go func() {
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				_ = conn.Close()
+			}
+		}()
+	})
+}
+
+func (g *readinessGate) close() {
+	g.mu.Lock()
+	ln := g.ln
+	g.mu.Unlock()
+	if ln != nil {
+		_ = ln.Close()
+	}
+}
+
+// heldConnSeq generates the per-connection ids for the held-connection loop and,
+// critically, tracks which PRIOR connection a reconnect recovers. The analyzer
+// matches recovery by the reset's OWN connId, so the ConnReconnected that
+// recovers connection N's reset MUST carry connection N's id - not the new
+// connection's id. Factored out as a pure helper so this id-carry is unit
+// testable without a socket (see probe_test.go).
+type heldConnSeq struct {
+	node  string
+	gen   uint64
+	last  string
+	first bool
+}
+
+func newHeldConnSeq(node string) *heldConnSeq {
+	return &heldConnSeq{node: node, first: true}
+}
+
+// next allocates the id for a freshly established held connection. It returns
+// that id and, when this is a reconnect (every connection after the first), the
+// id of the prior connection whose reset this reconnect recovers. Call exactly
+// once per successful dial.
+func (s *heldConnSeq) next() (connID, reconnectID string, isReconnect bool) {
+	connID = fmt.Sprintf("%s-held-%d", s.node, atomic.AddUint64(&s.gen, 1))
+	if s.first {
+		s.first = false
+	} else {
+		reconnectID = s.last
+		isReconnect = true
+	}
+	s.last = connID
+	return connID, reconnectID, isReconnect
+}
+
 // heldConnLoop keeps a single long-lived connection open, trickling a keepalive
 // on it, reconnecting after a break. The connId is stable across the life of
 // one connection instance and regenerated on reconnect, so the analyzer can
-// dedup resets per (connId, window) and measure recovery reset->reconnect.
-func heldConnLoop(ctx context.Context, cfg ProbeConfig, emit emitFunc) {
-	var gen uint64
-	firstConnect := true
+// dedup resets per (connId, window) and measure recovery reset->reconnect. The
+// ConnReconnected recovering connection N's reset is emitted with connection N's
+// id (carried forward via heldConnSeq), which is the id the analyzer keys
+// recovery on. onReady is invoked once, after the first successful dial.
+func heldConnLoop(ctx context.Context, cfg ProbeConfig, emit emitFunc, onReady func()) {
+	seq := newHeldConnSeq(cfg.Node)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		connID := fmt.Sprintf("%s-held-%d", cfg.Node, atomic.AddUint64(&gen, 1))
 		conn, err := net.DialTimeout("tcp", cfg.EchoAddr, 5*time.Second)
 		if err != nil {
 			// Cannot establish the held connection at all; wait and retry.
 			time.Sleep(time.Second)
 			continue
 		}
-		if firstConnect {
-			firstConnect = false
-		} else {
-			emit(model.ConnReconnected, connID)
+		connID, reconnectID, isReconnect := seq.next()
+		if isReconnect {
+			emit(model.ConnReconnected, reconnectID)
+		} else if onReady != nil {
+			onReady()
 		}
 		reason := holdAndTrickle(ctx, conn, cfg, connID, emit)
 		conn.Close()

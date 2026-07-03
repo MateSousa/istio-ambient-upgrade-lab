@@ -64,6 +64,11 @@ func RunMeasure(ctx context.Context, cfg MeasureConfig) (model.Result, int, erro
 		return model.Result{}, 3, fmt.Errorf("kube clients: %w", err)
 	}
 
+	// Anchor log collection to this run so a re-run against the long-lived probe
+	// Pods never ingests a PREVIOUS run's ConnEvents (which predate this run's
+	// drain and would surface as false died-before-drain ERRORs).
+	runStart := time.Now()
+
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
 	watcher := NewRollWatcher(cfg.Grace)
@@ -82,7 +87,7 @@ func RunMeasure(ctx context.Context, cfg MeasureConfig) (model.Result, int, erro
 	case <-time.After(cfg.Deadline):
 	}
 
-	events, err := collectEvents(ctx, cs, cfg.ProbeNamespace)
+	events, err := collectEvents(ctx, cs, cfg.ProbeNamespace, runStart)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: collecting probe events: %v\n", err)
 	}
@@ -170,16 +175,19 @@ func waitProbesReady(ctx context.Context, cs kubernetes.Interface, ns string, ti
 }
 
 // collectEvents reads the logs of every app=probe Pod and parses the JSON-line
-// ConnEvents they emitted during the observation window.
-func collectEvents(ctx context.Context, cs kubernetes.Interface, ns string) ([]model.ConnEvent, error) {
+// ConnEvents they emitted during the observation window. It bounds log
+// collection with SinceTime=since so only THIS run's events are ingested; older
+// events from a prior run against the same long-lived probe Pods are skipped.
+func collectEvents(ctx context.Context, cs kubernetes.Interface, ns string, since time.Time) ([]model.ConnEvent, error) {
 	pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: "app=probe"})
 	if err != nil {
 		return nil, err
 	}
+	sinceTime := metav1.NewTime(since)
 	var events []model.ConnEvent
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		stream, err := cs.CoreV1().Pods(ns).GetLogs(p.Name, &corev1.PodLogOptions{Container: "probe"}).Stream(ctx)
+		stream, err := cs.CoreV1().Pods(ns).GetLogs(p.Name, &corev1.PodLogOptions{Container: "probe", SinceTime: &sinceTime}).Stream(ctx)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: logs %s: %v\n", p.Name, err)
 			continue

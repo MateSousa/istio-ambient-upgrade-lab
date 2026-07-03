@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -56,16 +57,16 @@ func RunRolloutRestart(ctx context.Context, dyn dynamic.Interface, cfg RolloutCo
 		return info, fmt.Errorf("read mesh Application selfHeal: %w", err)
 	}
 
-	restored := false
+	// restore is guarded by sync.Once so the deferred restore, the explicit
+	// post-restart restore, and the signal handler cannot race on it; the first
+	// caller performs the patch and its result is memoised for the rest.
+	var (
+		restoreOnce sync.Once
+		restoreErr  error
+	)
 	restore := func() error {
-		if restored {
-			return nil
-		}
-		if err := setSelfHeal(ctx, dyn, prev); err != nil {
-			return err
-		}
-		restored = true
-		return nil
+		restoreOnce.Do(func() { restoreErr = setSelfHeal(ctx, dyn, prev) })
+		return restoreErr
 	}
 
 	// Signal-safe restore: if we are killed mid-window, put selfHeal back.
@@ -73,7 +74,9 @@ func RunRolloutRestart(ctx context.Context, dyn dynamic.Interface, cfg RolloutCo
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		_ = restore()
+		if err := restore(); err != nil {
+			fmt.Fprintf(os.Stderr, "rollout-restart: FAILED to restore selfHeal on signal: %v (manual repair needed: set spec.syncPolicy.automated.selfHeal=%t on the mesh Application)\n", err, prev)
+		}
 		os.Exit(2)
 	}()
 	defer signal.Stop(sigCh)

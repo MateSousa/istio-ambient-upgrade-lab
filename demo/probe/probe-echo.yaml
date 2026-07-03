@@ -136,6 +136,9 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+              name: health
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -148,6 +151,16 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+          # The probe opens this health port only AFTER its first successful dial
+          # to the same-node echo, so Ready means the measured held connection is
+          # actually established - which is what measure.go's waitProbesReady
+          # gates trigger-firing on (not merely that the process started).
+          readinessProbe:
+            tcpSocket:
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 6
 ---
 # ---------------------------------------------------------------- worker 2 ----
 apiVersion: apps/v1
@@ -265,6 +278,9 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+              name: health
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -277,6 +293,16 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+          # The probe opens this health port only AFTER its first successful dial
+          # to the same-node echo, so Ready means the measured held connection is
+          # actually established - which is what measure.go's waitProbesReady
+          # gates trigger-firing on (not merely that the process started).
+          readinessProbe:
+            tcpSocket:
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 6
 ---
 # ---------------------------------------------------------------- worker 3 ----
 apiVersion: apps/v1
@@ -394,6 +420,9 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+              name: health
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -406,3 +435,13 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+          # The probe opens this health port only AFTER its first successful dial
+          # to the same-node echo, so Ready means the measured held connection is
+          # actually established - which is what measure.go's waitProbesReady
+          # gates trigger-firing on (not merely that the process started).
+          readinessProbe:
+            tcpSocket:
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 6

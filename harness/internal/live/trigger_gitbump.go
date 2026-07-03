@@ -7,7 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
+
+	"sigs.k8s.io/yaml"
 
 	"github.com/MateSousa/istio-ambient-upgrade-lab/harness/internal/model"
 )
@@ -82,7 +83,10 @@ func RunGitBump(ctx context.Context, cfg GitBumpConfig) (GitBumpResult, error) {
 	}
 	info.ChartVersionFrom = fromVer
 
-	updated := bumpChart(string(chart), cfg.ZtunnelFrom, cfg.ZtunnelTo, fromVer, cfg.ChartVersionTo)
+	updated, err := bumpChart(string(chart), cfg.ZtunnelFrom, cfg.ZtunnelTo, fromVer, cfg.ChartVersionTo)
+	if err != nil {
+		return GitBumpResult{Info: info}, err
+	}
 	if err := os.WriteFile(chartPath, []byte(updated), 0o644); err != nil {
 		return GitBumpResult{Info: info}, err
 	}
@@ -133,17 +137,24 @@ func chartVersion(chart string) (string, error) {
 	return m[1], nil
 }
 
-// bumpChart rewrites the umbrella version and the ztunnel dependency version.
-func bumpChart(chart, ztFrom, ztTo, verFrom, verTo string) string {
+// bumpChart rewrites the umbrella version and the ztunnel dependency version. It
+// errors if the ztunnel-dependency substitution is a no-op (e.g. a reformatted
+// Chart.yaml the regex no longer matches): otherwise the umbrella version would
+// still bump and a chart with an UNCHANGED ztunnel dep would be published,
+// wasting a cycle that only surfaces later as a no-rollout ERROR.
+func bumpChart(chart, ztFrom, ztTo, verFrom, verTo string) (string, error) {
 	// umbrella version: only the top-level `version:` line.
 	out := chartVersionRe.ReplaceAllString(chart, "version: "+verTo)
 	// ztunnel dependency version: the `version: <ztFrom>` under the ztunnel dep.
 	// The subchart deps are all pinned to the same version, so scope the replace
 	// to the ztunnel block by matching the name line first.
 	ztBlock := regexp.MustCompile(`(?m)(- name: ztunnel\n\s+version:\s*)` + regexp.QuoteMeta(ztFrom))
-	out = ztBlock.ReplaceAllString(out, "${1}"+ztTo)
+	bumped := ztBlock.ReplaceAllString(out, "${1}"+ztTo)
+	if bumped == out {
+		return "", fmt.Errorf("ztunnel dependency version %q not found under `- name: ztunnel` in Chart.yaml; substitution would no-op and publish a chart with an UNCHANGED ztunnel dep", ztFrom)
+	}
 	_ = verFrom
-	return out
+	return bumped, nil
 }
 
 func bumpTargetRevision(mesh, to string) string {
@@ -151,20 +162,26 @@ func bumpTargetRevision(mesh, to string) string {
 }
 
 // assertNoGlobalTag fails if values.yaml sets global.tag/global.hub, which would
-// override the subchart image and make the dep bump a no-op (no roll).
+// override the subchart image and make the dep bump a no-op (no roll). It parses
+// the YAML and inspects global.tag/global.hub specifically, so an unrelated
+// `tag:`/`hub:` under another key does not false-positive and a genuine one
+// under a differently-indented global block is not missed.
 func assertNoGlobalTag(valuesPath string) error {
 	b, err := os.ReadFile(valuesPath)
 	if err != nil {
 		return err
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "#") {
-			continue
-		}
-		if strings.HasPrefix(t, "tag:") || strings.HasPrefix(t, "hub:") {
-			return fmt.Errorf("values.yaml appears to set global %s; a set global.tag/hub overrides the subchart image and no-ops the ztunnel dep bump", t)
-		}
+	var values struct {
+		Global struct {
+			Tag string `json:"tag"`
+			Hub string `json:"hub"`
+		} `json:"global"`
+	}
+	if err := yaml.Unmarshal(b, &values); err != nil {
+		return fmt.Errorf("parse %s: %w", valuesPath, err)
+	}
+	if values.Global.Tag != "" || values.Global.Hub != "" {
+		return fmt.Errorf("values.yaml sets global.tag/global.hub (tag=%q hub=%q); a set global.tag/hub overrides the subchart image and no-ops the ztunnel dep bump", values.Global.Tag, values.Global.Hub)
 	}
 	return nil
 }
