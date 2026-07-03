@@ -1,0 +1,35 @@
+# data - the out-of-mesh Postgres + the in-mesh pgbouncer writer/reader pools.
+#
+# sync-wave "1": same wave as demo-hello (which owns the ambient-labelled
+# demo-app namespace). destination.namespace is demo-data (created here via
+# CreateNamespace); the pgbouncer objects carry an explicit demo-app namespace
+# and are applied there. If demo-app doesn't exist yet, ArgoCD retries until
+# demo-hello has created it - so pgbouncer pods are only ever created into an
+# already-ambient-labelled namespace and land in the datapath.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: data
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: demo/data
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-data
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -15,9 +15,9 @@ app_ok() {
   [[ "${health}" == "Healthy" && "${sync}" == "Synced" ]]
 }
 
-echo "==> waiting up to ${TIMEOUT}s for demo-root, mesh, demo-hello to be Synced/Healthy"
+echo "==> waiting up to ${TIMEOUT}s for demo-root, mesh, demo-hello, data, app-a to be Synced/Healthy"
 while :; do
-  if app_ok demo-root && app_ok mesh && app_ok demo-hello; then
+  if app_ok demo-root && app_ok mesh && app_ok demo-hello && app_ok data && app_ok app-a; then
     echo "all applications Synced/Healthy"
     break
   fi
@@ -36,5 +36,11 @@ kubectl -n istio-system rollout status daemonset/istio-cni-node --timeout="${TIM
 
 echo "==> waiting for hello pod"
 kubectl -n demo-app rollout status deploy/hello --timeout="${TIMEOUT}s"
+
+echo "==> waiting for data-path workloads"
+kubectl -n demo-data rollout status deploy/postgres --timeout="${TIMEOUT}s"
+kubectl -n demo-app rollout status deploy/pgbouncer-writer --timeout="${TIMEOUT}s"
+kubectl -n demo-app rollout status deploy/pgbouncer-reader --timeout="${TIMEOUT}s"
+kubectl -n demo-app rollout status deploy/app-a --timeout="${TIMEOUT}s"
 
 echo "PASS: mesh converged."

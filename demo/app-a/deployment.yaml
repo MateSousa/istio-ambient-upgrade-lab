@@ -1,0 +1,111 @@
+# app-a - the ambient-enrolled Node/TypeORM microservice. Lives in demo-app
+# (ambient), connects to pgbouncer-writer over the mesh, and holds a long-lived
+# pooled connection (background keepalive + optional GET /hold). That persistent
+# app-a -> pgbouncer connection, carried over HBONE by ztunnel, is the flow the
+# upgrade drill exists to protect.
+#
+# The image is built locally and kind-loaded (scripts/build-app-images.sh) - no
+# registry prefix and imagePullPolicy: IfNotPresent so the kubelet uses the
+# preloaded image instead of trying to pull it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-a
+  namespace: demo-app
+  labels:
+    app: app-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-a
+  template:
+    metadata:
+      labels:
+        app: app-a
+    spec:
+      # REQUIRED anti-affinity: app-a must NOT land on a node running a
+      # pgbouncer-writer replica, so app-a -> pgbouncer-writer is always a
+      # cross-node HBONE connection. Satisfiable because the cluster has 3
+      # workers and the writer pool (2 replicas, soft-spread) occupies at most
+      # 2 of them, always leaving a writer-free node for app-a.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: pgbouncer
+                  pgbouncer-role: writer
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app-a
+          image: demo-app-a:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: DB_HOST
+              value: pgbouncer-writer
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: demo_app
+            - name: DB_NAME
+              value: demo
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-a-db
+                  key: DB_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-a
+  namespace: demo-app
+  labels:
+    app: app-a
+spec:
+  selector:
+    app: app-a
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

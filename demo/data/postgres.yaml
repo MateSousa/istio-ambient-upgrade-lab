@@ -1,0 +1,142 @@
+# Postgres - the out-of-mesh data store (the Aurora analog).
+#
+# Superuser password comes from a plain Secret (lab-only; production sources DB
+# credentials from Secrets Manager via External Secrets). The demo_app role is
+# created with a PRE-HASHED SCRAM-SHA-256 verifier literal, NOT a plaintext
+# password - Postgres stores a verifier string verbatim (this is how pg_dump
+# round-trips SCRAM secrets). The SAME verifier appears in pgbouncer's
+# userlist.txt, and the matching plaintext password 'demo_app_pw' is what both
+# pgbouncer (outbound, in pgbouncer.ini) and app-a authenticate with. See
+# scripts/gen-scram.py for the one-liner that regenerates these literals.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-superuser
+  namespace: demo-data
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "postgres_superuser_pw"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: demo-data
+data:
+  # Runs once, on first boot, from /docker-entrypoint-initdb.d, inside the
+  # POSTGRES_DB (demo) as the superuser. Creates the demo_app login role from a
+  # SCRAM verifier literal, the widgets table + seed rows, and the read grants
+  # app-a needs.
+  init.sql: |
+    CREATE ROLE demo_app LOGIN PASSWORD 'SCRAM-SHA-256$4096:YW1iaWVudGxhYmRlbW9hcHA=$Mz4rJnUCA9xfE6x/Ho2oWn/eQstj7CTubUWAzp84gng=:hS0pA/rpXZ3CfOIBFnGxYIKBYsQDGqgl7CraYtcl4EA=';
+
+    CREATE TABLE widgets (
+      id serial PRIMARY KEY,
+      name text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    INSERT INTO widgets (name) VALUES ('alpha'), ('bravo'), ('charlie');
+
+    GRANT SELECT, INSERT ON widgets TO demo_app;
+    GRANT USAGE, SELECT ON SEQUENCE widgets_id_seq TO demo_app;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: demo-data
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres:16.4-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              value: demo
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: POSTGRES_PASSWORD
+            # Keep PGDATA in a subdirectory of the mount so the data dir init is
+            # never confused by the volume root.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "demo"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "demo"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: data
+          emptyDir: {}
+        # Unix socket dir; fsGroup 999 makes the emptyDir group-writable so
+        # Postgres (uid 999) can create its socket without owning /var/run.
+        - name: run
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: demo-data
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

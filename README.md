@@ -7,21 +7,41 @@ genericized **umbrella chart** wrapping the four upstream Istio subcharts
 private OCI registry, and reconciled by **ArgoCD** through an **app-of-apps**
 that points back at this repo.
 
-This is **slice 1**: the skeleton. It brings the mesh up and proves a test pod
-is genuinely enrolled in the ztunnel datapath. Later slices add pgbouncer + DB
-clients, a waypoint, a load generator, and the actual upgrade drop-measurement.
-Everything here is pure upstream mechanics — `docker.io/istio` images, upstream
-Helm charts, zero private identifiers.
+**Slice 1** brought the mesh up and proved a test pod is genuinely enrolled in
+the ztunnel datapath. **Slice 2 (this) adds the data path**: an out-of-mesh
+Postgres (the Aurora analog), an in-mesh **pgbouncer** writer/reader pair
+configured with the real nonprod knobs, and **app-a** (Node/TypeORM) holding a
+long-lived, in-mesh, pgbouncer-fronted connection — the exact flow the upgrade
+drill exists to protect. Later slices add a waypoint, a load generator, and the
+actual upgrade drop-measurement. Everything here is pure upstream mechanics —
+`docker.io/istio`, `docker.io/library/postgres`, `docker.io/edoburu/pgbouncer`,
+`docker.io/library/node` images, upstream Helm charts, zero private identifiers.
 
 ## What it builds
 
 ```
-kind (1 control-plane + 2 workers, k8s 1.33.7 pinned by digest)
+kind (1 control-plane + 3 workers, k8s 1.33.7 pinned by digest)
   └── ArgoCD (vendored, pinned v3.3.12)
         └── demo-root  (app-of-apps, watches apps/)
               ├── mesh         -> umbrella istio chart 1.0.0 from GHCR OCI (istio-system)
-              └── demo-hello   -> ambient-enrolled demo namespace + hello pod (demo-app)
+              ├── demo-hello   -> ambient-enrolled demo namespace + hello pod (demo-app)
+              ├── data         -> postgres (demo-data, OUT of mesh) + pgbouncer
+              │                   writer/reader pools (demo-app, in mesh)
+              └── app-a        -> ambient Node/TypeORM client holding a pooled,
+                                  cross-node app-a -> pgbouncer connection (demo-app)
 ```
+
+The drop-relevant path is `app-a -> pgbouncer` (in mesh, carried over HBONE by
+ztunnel) and `pgbouncer -> postgres` (out of mesh, plaintext) — matching
+production, where only the app -> pooler hop is in the mesh. app-a is pinned by
+REQUIRED anti-affinity to a different node than every pgbouncer-writer, so that
+in-mesh hop is a deterministic cross-node connection. pgbouncer replicates the
+nonprod pooler verbatim: `pool_mode=transaction`, the documented pool
+sizes/timeouts, `replicas: 2`, RollingUpdate `maxUnavailable:0/maxSurge:1`,
+`terminationGracePeriodSeconds: 150`, and a PDB `minAvailable: 1` per pool.
+app-a's local image is built and `kind load`ed before the app-of-apps syncs
+(`scripts/build-app-images.sh`, `imagePullPolicy: IfNotPresent`, no registry
+prefix).
 
 The umbrella chart (`charts/istio`) sets only behavioural knobs — ambient
 profiles for cni/istiod and ztunnel `terminationGracePeriodSeconds: 120`. Images
@@ -46,8 +66,9 @@ against docker.io/istio.
 
 ```bash
 export GHCR_TOKEN=ghp_...        # PAT with write:packages + read:packages
-make up                          # kind + publish chart + ArgoCD + app-of-apps + verify
-make verify                      # re-run the convergence + datapath gates
+make up                          # kind + publish chart + build images + ArgoCD + app-of-apps + verify
+make build-images                # build + kind-load the demo app images (app-a)
+make verify                      # re-run the convergence + datapath + data-path gates
 make down                        # delete the kind cluster
 make argocd-ui                   # port-forward the ArgoCD UI (pw: make argocd-password)
 make scan                        # hygiene: fail on any proprietary identifier
@@ -55,7 +76,11 @@ make scan                        # hygiene: fail on any proprietary identifier
 
 `make up` runs, in order: preflight (asserts `GHCR_TOKEN`, docker) → `kind
 create` → `publish-chart` → install ArgoCD + register the private GHCR OCI
-repository secret → apply the root app-of-apps → wait for the mesh → verify.
+repository secret → build + `kind load` the app images → apply the root
+app-of-apps → wait for the mesh + data path → verify.
+
+The SCRAM-SHA-256 verifier literals shared by Postgres and pgbouncer are
+regenerated with `python3 scripts/gen-scram.py` (fixed salts, lab-only).
 
 ## What gets proven (`make verify`)
 
@@ -77,7 +102,21 @@ Each gate prints `PASS`/`FAIL`; a single failure fails the run.
    in the `config_dump` of the **ztunnel pod on the same node** (read via a
    port-forward to that ztunnel's admin port `15000`). This proves the pod is in
    the mesh datapath — a labelled, `Running` pod alone is *not* accepted as proof.
-10. The hygiene scan finds no proprietary identifiers.
+10. **Data-path gates** (`scripts/verify-data.sh`):
+    - `postgres` Running in `demo-data`, which carries **no** `dataplane-mode`
+      label.
+    - **Out-of-mesh proof:** in every ztunnel `config_dump` — the *same* dump
+      that *does* contain the in-mesh pgbouncer + app-a IPs (a positive control
+      that the dump is populated) — the Postgres pod IP is **absent**.
+    - `pgbouncer-writer` + `app-a` IPs present in their nodes' ztunnel datapath.
+    - `app-a` `/readyz` is 200 and `/query` returns a `widgets` row (app →
+      pgbouncer → Postgres, end to end).
+    - app-a holds a long-lived pooled client, visible in the pgbouncer admin
+      console (`SHOW CLIENTS` / `SHOW POOLS`) — not just a `pg_stat_activity` row.
+    - `pool_mode=transaction` (live `SHOW CONFIG`) and
+      `terminationGracePeriodSeconds=150` on both pools.
+    - `app-a` and `pgbouncer-writer` are on **different** nodes (anti-affinity).
+11. The hygiene scan finds no proprietary identifiers.
 
 ## `targetRevision` is pinned here (on purpose)
 
@@ -120,10 +159,15 @@ gitops/argocd/
   install/               vendored ArgoCD install.yaml (v3.3.12) + OCI repo-secret template
   root-app-of-apps.yaml  demo-root Application (watches apps/)
 apps/
-  mesh/                  mesh.yaml (umbrella) + demo-hello.yaml (later sync-wave)
-  data/ apps/ observability/   .gitkeep placeholders for later slices
+  mesh/                  mesh.yaml (umbrella) + demo-hello.yaml (sync-wave 1)
+  data/data.yaml         postgres + pgbouncer child app (sync-wave 1)
+  apps/app-a.yaml        app-a child app (sync-wave 2)
+  observability/         .gitkeep placeholder for a later slice
 demo/hello/              ambient-enrolled namespace + hello Deployment + Service
-kind/cluster.yaml        1 control-plane + 2 workers, k8s 1.33.7 by digest
-scripts/                 up / down / publish-chart / wait-mesh / verify / no-identity-scan
+demo/data/              demo-data namespace + postgres + pgbouncer writer/reader
+demo/app-a/             app-a manifests (top level) + Node build context (app/)
+kind/cluster.yaml        1 control-plane + 3 workers, k8s 1.33.7 by digest
+scripts/                 up / down / publish-chart / build-app-images / gen-scram /
+                         wait-mesh / verify / verify-data / no-identity-scan
 Makefile
 ```

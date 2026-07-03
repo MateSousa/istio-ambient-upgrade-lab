@@ -1,0 +1,18 @@
+# demo-data namespace - deliberately kept OUT of the ambient mesh.
+#
+# There is NO istio.io/dataplane-mode label here: this is the Aurora analog, an
+# external data store the mesh does not manage. Keeping Postgres out of ambient
+# means the only in-mesh hop on the drop-relevant path is app-a -> pgbouncer,
+# which mirrors production (app -> pgbouncer in-mesh, pgbouncer -> Aurora out of
+# mesh). verify-data.sh asserts this absence two ways: the namespace carries no
+# dataplane-mode label, and the Postgres pod IP never appears in any ztunnel
+# config_dump. PSA baseline is sufficient - Postgres runs non-root with no
+# elevated capabilities.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-data
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline

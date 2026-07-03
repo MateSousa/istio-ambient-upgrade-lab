@@ -1,0 +1,62 @@
+# pgbouncer shared config: the pgbouncer.ini knobs (verbatim from the real
+# nonprod tenant pooler) and the SCRAM userlist. Both the writer and reader
+# Deployments mount these - in this lab both pools front the single Postgres, so
+# the [databases] host is identical; in production writer/reader would point at
+# the Aurora writer/reader endpoints.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgbouncer-config
+  namespace: demo-app
+data:
+  pgbouncer.ini: |
+    [databases]
+    # LAB-ONLY DIVERGENCE: the outbound demo_app password is inlined here in
+    # plaintext so pgbouncer can SCRAM-authenticate to Postgres. Production uses
+    # auth_query / server-side credential discovery instead of an inline
+    # password. 'demo_app_pw' is the plaintext matching the SCRAM verifier stored
+    # for demo_app in Postgres and in userlist.txt below.
+    demo = host=postgres.demo-data.svc.cluster.local port=5432 dbname=demo password=demo_app_pw
+
+    [pgbouncer]
+    listen_addr = 0.0.0.0
+    listen_port = 5432
+    auth_type = scram-sha-256
+    auth_file = /etc/pgbouncer/userlist.txt
+    # No pidfile. /etc/pgbouncer entries are read-only mounts and we never run
+    # `pgbouncer -R`; a stale pidfile from a SIGKILL'd process would otherwise
+    # trap the next start in CrashLoopBackOff.
+    pool_mode = transaction
+    default_pool_size = 5
+    min_pool_size = 10
+    max_client_conn = 3000
+    max_db_connections = 30
+    reserve_pool_size = 20
+    reserve_pool_timeout = 3
+    server_lifetime = 3600
+    server_idle_timeout = 600
+    query_timeout = 120
+    query_wait_timeout = 10
+    idle_transaction_timeout = 60
+    ignore_startup_parameters = extra_float_digits,options,statement_timeout,idle_in_transaction_session_timeout
+    stats_users = pgbouncer
+    admin_users = pgbouncer
+    server_tls_sslmode = disable
+    client_tls_sslmode = disable
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pgbouncer-userlist
+  namespace: demo-app
+type: Opaque
+stringData:
+  # SCRAM-SHA-256 verifier literals (username -> verifier). demo_app's verifier
+  # matches password 'demo_app_pw' and is byte-identical to the one Postgres
+  # stores for the demo_app role. pgbouncer's verifier matches password
+  # 'pgbouncer_admin_pw' and gates the admin/stats console (admin_users +
+  # stats_users = pgbouncer). Regenerate with scripts/gen-scram.py.
+  userlist.txt: |
+    "demo_app" "SCRAM-SHA-256$4096:YW1iaWVudGxhYmRlbW9hcHA=$Mz4rJnUCA9xfE6x/Ho2oWn/eQstj7CTubUWAzp84gng=:hS0pA/rpXZ3CfOIBFnGxYIKBYsQDGqgl7CraYtcl4EA="
+    "pgbouncer" "SCRAM-SHA-256$4096:YW1iaWVudGxhYnBnYmFkbWlu$vZCFFLpvprvQsJJzWlsMX7+cNlKDJuMpvwWTcKxAPxA=:vJUaWWvPHStPWE/q6dSbh7ZqhEkkXYSxYeTu8vcDwC4="

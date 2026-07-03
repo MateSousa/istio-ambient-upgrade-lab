@@ -5,7 +5,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help up down publish-chart verify scan argocd-password argocd-ui
+.PHONY: help up down publish-chart build-images verify scan argocd-password argocd-ui
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -19,6 +19,9 @@ down: ## Delete the kind cluster
 
 publish-chart: ## Build, package and push the umbrella chart to GHCR (needs GHCR_TOKEN)
 	scripts/publish-chart.sh
+
+build-images: ## Build the demo app images and load them into the kind cluster
+	scripts/build-app-images.sh
 
 verify: ## Run all convergence + datapath-enrollment gates
 	scripts/verify.sh

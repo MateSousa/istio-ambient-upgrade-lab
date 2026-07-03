@@ -149,6 +149,14 @@ else
   fi
 fi
 
+# ------------------------------------------------------- data-path gates ------
+echo "== gate: data path (postgres out-of-mesh + pgbouncer + app-a) =="
+if scripts/verify-data.sh; then
+  pass "data-path gates (see verify-data.sh output above)"
+else
+  fail "one or more data-path gates failed (see verify-data.sh output above)"
+fi
+
 # ------------------------------------------------------- hygiene re-scan ------
 echo "== gate: no proprietary identifiers =="
 if scripts/no-identity-scan.sh >/dev/null 2>&1; then

@@ -1,0 +1,140 @@
+# pgbouncer WRITER pool - in-mesh (demo-app is ambient-enrolled). Fronts the
+# out-of-mesh Postgres. app-a connects here, so the app-a -> pgbouncer-writer
+# hop is the in-mesh, HBONE-carried, drop-relevant connection.
+#
+# HA/rollout knobs are verbatim from the real nonprod pooler: replicas 2,
+# RollingUpdate maxUnavailable:0 / maxSurge:1, terminationGracePeriodSeconds:150
+# (must outlast query_timeout=120 so in-flight queries finish on drain), a PDB
+# with minAvailable:1, and a soft anti-affinity spreading the 2 replicas across
+# nodes.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-writer
+  namespace: demo-app
+  labels:
+    app: pgbouncer
+    pgbouncer-role: writer
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: pgbouncer
+      pgbouncer-role: writer
+  template:
+    metadata:
+      labels:
+        app: pgbouncer
+        pgbouncer-role: writer
+    spec:
+      terminationGracePeriodSeconds: 150
+      # Spread the 2 writer replicas across nodes (soft - the scheduler still
+      # places both if only one node is free). With app-a's REQUIRED
+      # anti-affinity against this pool (see demo/app-a), keeping writers off
+      # app-a's node is what makes the app-a -> writer hop a deterministic
+      # cross-node HBONE connection.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: pgbouncer
+                    pgbouncer-role: writer
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pgbouncer
+          image: docker.io/edoburu/pgbouncer:v1.24.1-p1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: pgbouncer
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          livenessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgbouncer/pgbouncer.ini
+              subPath: pgbouncer.ini
+              readOnly: true
+            - name: userlist
+              mountPath: /etc/pgbouncer/userlist.txt
+              subPath: userlist.txt
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: pgbouncer-config
+        - name: userlist
+          secret:
+            secretName: pgbouncer-userlist
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-writer
+  namespace: demo-app
+  labels:
+    app: pgbouncer
+    pgbouncer-role: writer
+spec:
+  type: ClusterIP
+  selector:
+    app: pgbouncer
+    pgbouncer-role: writer
+  ports:
+    - name: pgbouncer
+      port: 5432
+      targetPort: pgbouncer
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pgbouncer-writer
+  namespace: demo-app
+  labels:
+    app: pgbouncer
+    pgbouncer-role: writer
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: pgbouncer
+      pgbouncer-role: writer

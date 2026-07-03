@@ -1,0 +1,130 @@
+# pgbouncer READER pool - in-mesh, structurally identical to the writer pool.
+# In this lab it fronts the same single Postgres; in production it would point
+# at the Aurora reader endpoint. Present so the writer/reader topology (two
+# Deployments, two Services, two PDBs) matches the real pooler.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-reader
+  namespace: demo-app
+  labels:
+    app: pgbouncer
+    pgbouncer-role: reader
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: pgbouncer
+      pgbouncer-role: reader
+  template:
+    metadata:
+      labels:
+        app: pgbouncer
+        pgbouncer-role: reader
+    spec:
+      terminationGracePeriodSeconds: 150
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: pgbouncer
+                    pgbouncer-role: reader
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pgbouncer
+          image: docker.io/edoburu/pgbouncer:v1.24.1-p1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: pgbouncer
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          livenessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgbouncer/pgbouncer.ini
+              subPath: pgbouncer.ini
+              readOnly: true
+            - name: userlist
+              mountPath: /etc/pgbouncer/userlist.txt
+              subPath: userlist.txt
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: pgbouncer-config
+        - name: userlist
+          secret:
+            secretName: pgbouncer-userlist
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-reader
+  namespace: demo-app
+  labels:
+    app: pgbouncer
+    pgbouncer-role: reader
+spec:
+  type: ClusterIP
+  selector:
+    app: pgbouncer
+    pgbouncer-role: reader
+  ports:
+    - name: pgbouncer
+      port: 5432
+      targetPort: pgbouncer
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pgbouncer-reader
+  namespace: demo-app
+  labels:
+    app: pgbouncer
+    pgbouncer-role: reader
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: pgbouncer
+      pgbouncer-role: reader

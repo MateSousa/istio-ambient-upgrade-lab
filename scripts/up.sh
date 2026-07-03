@@ -53,6 +53,12 @@ fi
 kubectl apply -f "${OCI_SECRET_RENDERED}"
 rm -f "${OCI_SECRET_RENDERED}"
 
+echo "==> build + kind-load demo app images"
+# Must run BEFORE the app-of-apps: app-a is deployed with imagePullPolicy
+# IfNotPresent and no registry prefix, so the image has to already exist in the
+# cluster when wave-2 syncs.
+scripts/build-app-images.sh
+
 echo "==> apply root app-of-apps"
 kubectl apply -f "${ROOT_APP}"
 

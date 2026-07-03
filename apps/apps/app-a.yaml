@@ -1,0 +1,37 @@
+# app-a - the ambient-enrolled Node/TypeORM client.
+#
+# sync-wave "2": after the data app (wave 1) is Healthy, so pgbouncer-writer
+# pods already exist when app-a is scheduled (its REQUIRED anti-affinity is
+# evaluated against them) and Postgres is ready to serve /readyz + /query.
+#
+# directory.recurse is false on purpose: demo/app-a holds the k8s manifests at
+# its top level and the Node build context under demo/app-a/app/. recurse:false
+# keeps ArgoCD reading only the top-level YAML and never descending into app/
+# (which contains package.json etc. that are not Kubernetes manifests).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-a
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: demo/app-a
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
