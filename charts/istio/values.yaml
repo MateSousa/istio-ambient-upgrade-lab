@@ -16,6 +16,19 @@ cni:
 istiod:
   # Ambient profile: enable the ztunnel/ambient control-plane surface in istiod.
   profile: ambient
+  # Turn on Envoy/ztunnel access logging to stdout (JSON) so the collection agent
+  # (Alloy DaemonSet, observability slice) can ship per-connection access logs to
+  # Loki. This is the "app AND Istio access logs" half of the observability AC.
+  #
+  # CAVEAT: this is a meshConfig change baked into the umbrella CHART, so it only
+  # takes effect when the chart is REPUBLISHED (bump the chart version to
+  # 1.0.0-dev2 + move the mesh Application's targetRevision pin to match) - which
+  # happens when the user runs `make up` with GHCR_TOKEN. Until that republish the
+  # collection path (Alloy -> Loki) is ready but ztunnel/Envoy are NOT yet emitting
+  # access logs. Do not claim access-log GENERATION is live without the republish.
+  meshConfig:
+    accessLogFile: /dev/stdout
+    accessLogEncoding: JSON
 
 ztunnel:
   # Give ztunnel a long drain on shutdown. ztunnel's internal connection drain

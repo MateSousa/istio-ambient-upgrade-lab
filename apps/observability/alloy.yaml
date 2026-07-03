@@ -1,0 +1,115 @@
+# alloy - the log shipper (DaemonSet) that tails node container logs into Loki.
+#
+# Public Helm-repo Application (grafana/alloy, exact pin). Stock upstream chart,
+# NOT republished to GHCR; ArgoCD's repo-server needs egress to grafana.github.io.
+#
+# DaemonSet (controller.type: daemonset) so every node's /var/log is tailed. The
+# Alloy pipeline discovers pods via the K8s API, maps each to its on-node log
+# file under /var/log/pods, attaches the labels namespace/pod/container/app/node,
+# and pushes to the Loki SingleBinary push endpoint. mounts.varlog mounts the
+# host /var/log read path.
+#
+# FALLBACK: grafana/promtail (the classic DaemonSet tail-to-Loki agent) is the
+# drop-in if Alloy misbehaves on kind - same scrape_configs shape, same Loki
+# push endpoint. Kept as a note; Alloy is the current-generation agent.
+#
+# sync-wave "5", namespace `observability`, NOT ambient-enrolled (see prometheus.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: alloy
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: alloy
+    targetRevision: 1.10.0
+    helm:
+      releaseName: alloy
+      valuesObject:
+        controller:
+          type: daemonset
+        alloy:
+          mounts:
+            varlog: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          configMap:
+            content: |-
+              logging {
+                level  = "info"
+                format = "logfmt"
+              }
+
+              discovery.kubernetes "pods" {
+                role = "pod"
+              }
+
+              // Attach the labels the dashboard + verify script query on, and
+              // rewrite __path__ to the on-node log file for each container.
+              discovery.relabel "pod_logs" {
+                targets = discovery.kubernetes.pods.targets
+
+                rule {
+                  source_labels = ["__meta_kubernetes_namespace"]
+                  target_label  = "namespace"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_name"]
+                  target_label  = "pod"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_container_name"]
+                  target_label  = "container"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_label_app"]
+                  target_label  = "app"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_node_name"]
+                  target_label  = "node"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+                  separator     = "/"
+                  action        = "replace"
+                  replacement   = "/var/log/pods/*$1/*.log"
+                  target_label  = "__path__"
+                }
+              }
+
+              local.file_match "pod_logs" {
+                path_targets = discovery.relabel.pod_logs.output
+              }
+
+              loki.source.file "pod_logs" {
+                targets    = local.file_match.pod_logs.targets
+                forward_to = [loki.write.default.receiver]
+              }
+
+              loki.write "default" {
+                endpoint {
+                  url = "http://loki.observability.svc.cluster.local:3100/loki/api/v1/push"
+                }
+              }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

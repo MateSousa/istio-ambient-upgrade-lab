@@ -165,6 +165,14 @@ else
   fail "one or more topology gates failed (see verify-topology.sh output above)"
 fi
 
+# ------------------------------------------------- observability gates --------
+echo "== gate: observability (Prometheus + Loki + Grafana + Alloy) =="
+if scripts/verify-observability.sh; then
+  pass "observability gates (see verify-observability.sh output above)"
+else
+  fail "one or more observability gates failed (see verify-observability.sh output above)"
+fi
+
 # ------------------------------------------------------- hygiene re-scan ------
 echo "== gate: no proprietary identifiers =="
 if scripts/no-identity-scan.sh >/dev/null 2>&1; then

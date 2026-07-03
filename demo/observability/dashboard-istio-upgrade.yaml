@@ -1,0 +1,312 @@
+# dashboard-istio-upgrade - the starter Grafana dashboard for the upgrade drill.
+#
+# A ConfigMap (NOT a Grafana chart value) labelled grafana_dashboard=1 so the
+# grafana sidecar (searchNamespace: observability) auto-loads it. Delivered by the
+# observability-config directory Application (apps/observability/observability-config.yaml).
+#
+# Panels correlate the L4 connection lifecycle (ztunnel), the control-plane push
+# health (istiod), the L7 waypoint request mix, and the connection-error LOGS:
+#   - ztunnel TCP opened/sec + closed/sec (native istio_tcp_connections_*_total)
+#   - lab:tcp_sockets_open (LAB-SYNTHESIZED recording rule - not a native metric;
+#     see apps/observability/prometheus.yaml for why a bare opened-minus-closed lies)
+#   - istiod pilot_xds, pilot_xds_push_time p95, pilot_total_xds_rejects
+#   - waypoint istio_requests_total by response_code
+#   - Loki: {namespace="demo-app"} |~ "ECONNRESET|Connection terminated"
+#
+# IMPORTANT: this dashboard is the operator-facing VIEW (SigNoz-parity), NOT the
+# source of truth for PASS/FAIL. The drill's verdict (new-connection failures,
+# existing-connection RSTs, recovery) comes from the slice-3 HARNESS (results.json),
+# not from these graphs. Grafana corroborates; the harness decides.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-istio-upgrade
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  dashboard-istio-upgrade.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": true,
+      "graphTooltip": 0,
+      "schemaVersion": 39,
+      "version": 1,
+      "title": "Istio Ambient Upgrade - Connection Lifecycle",
+      "tags": [
+        "istio",
+        "ambient",
+        "upgrade-drill"
+      ],
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "refresh": "30s",
+      "templating": {
+        "list": []
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "ztunnel TCP connections opened / sec",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(istio_tcp_connections_opened_total[1m]))",
+              "legendFormat": "opened/sec"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "ztunnel TCP connections closed / sec",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(istio_tcp_connections_closed_total[1m]))",
+              "legendFormat": "closed/sec"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "lab:tcp_sockets_open (lab-synthesized recording rule, NOT native)",
+          "description": "Reset/disappearance-tolerant approximation of open sockets. Not a native Istio metric; see apps/observability/prometheus.yaml. Verdict comes from the harness, not this panel.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "lab:tcp_sockets_open",
+              "legendFormat": "sockets open (approx)"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "istiod pilot_xds (connected XDS clients)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(pilot_xds)",
+              "legendFormat": "xds clients"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "istiod pilot_xds_push_time p95 (seconds)",
+          "description": "Histogram suffix (_bucket) pinned at live bring-up; adjust if the running istiod exposes a different suffix.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum(rate(pilot_xds_push_time_bucket[5m])) by (le))",
+              "legendFormat": "p95 push time"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "istiod pilot_total_xds_rejects / sec",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(pilot_total_xds_rejects[5m]))",
+              "legendFormat": "xds rejects/sec"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "waypoint istio_requests_total by response_code / sec",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 24
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(istio_requests_total{namespace=\"demo-app\"}[1m])) by (response_code)",
+              "legendFormat": "{{response_code}}"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "logs",
+          "title": "demo-app connection errors (ECONNRESET / Connection terminated)",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 32
+          },
+          "options": {
+            "showTime": true,
+            "wrapLogMessage": true,
+            "enableLogDetails": true,
+            "dedupStrategy": "none",
+            "sortOrder": "Descending"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "{namespace=\"demo-app\"} |~ \"ECONNRESET|Connection terminated\"",
+              "queryType": "range"
+            }
+          ]
+        }
+      ]
+    }

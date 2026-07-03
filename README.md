@@ -38,7 +38,13 @@ kind (1 control-plane + 3 workers, k8s 1.33.7 pinned by digest)
               ├── probe / load -> per-node drop-measurement probes + load gen (wave 3/4)
               ├── app-a        -> ambient Node/TypeORM client, chain head (wave 4)
               ├── app-b        -> ambient Python/SQLAlchemy client, chain middle (wave 4)
-              └── app-c        -> ambient Go/pgx client, chain tail (wave 4)
+              ├── app-c        -> ambient Go/pgx client, chain tail (wave 4)
+              └── observability (wave 5, OUT of mesh, public Helm repos)
+                    ├── prometheus  -> ztunnel/istiod/waypoint metrics (server-only)
+                    ├── loki        -> log store (SingleBinary, filesystem)
+                    ├── alloy       -> DaemonSet: tails node logs -> Loki
+                    ├── grafana     -> Prometheus + Loki datasources + starter dashboard
+                    └── observability-config -> the dashboard ConfigMap (demo/observability)
 ```
 
 The three services chain `app-a → app-b → app-c` over HTTP through the mesh: the
@@ -69,6 +75,99 @@ The umbrella chart (`charts/istio`) sets only behavioural knobs — ambient
 profiles for cni/istiod and ztunnel `terminationGracePeriodSeconds: 120`. Images
 are **not** overridden, so each subchart resolves its own `appVersion` (1.29.2)
 against docker.io/istio.
+
+## Observability (Prometheus + Loki + Grafana)
+
+The `observability` layer (sync-wave **5**, after the apps so its scrape targets
+exist) stands up the Grafana OSS stack the same way the real drill is validated
+in SigNoz — metrics graphs plus queryable error logs. It is delivered as four
+**public Helm-repo** ArgoCD Applications (exact pins, **not** republished to the
+private GHCR registry) plus one directory app for the dashboard:
+
+| App | Chart (pin) | Shape |
+|---|---|---|
+| `prometheus` | `prometheus-community/prometheus` `27.52.0` | server **only** (no alertmanager/node-exporter/kube-state-metrics/pushgateway), 1 replica, emptyDir, retention **2h**, scrape **30s** |
+| `loki` | `grafana/loki` `6.55.0` | SingleBinary, filesystem/emptyDir, tsdb schema v13, caches/minio/gateway off, retention 24h |
+| `alloy` | `grafana/alloy` `1.10.0` | DaemonSet, tails `/var/log/pods` → Loki, labels `namespace/pod/container/app/node` |
+| `grafana` | `grafana/grafana` `8.15.0` | 1 replica, no persistence, `admin/admin` (trivial lab cred), Prometheus+Loki datasources auto-provisioned, dashboard sidecar (searchNamespace `observability`) |
+
+The `observability` namespace is created with `CreateNamespace=true` and is
+**deliberately NOT ambient-enrolled** (no `istio.io/dataplane-mode` label): the
+stack observes the mesh from *outside* it, so its own scrape/query traffic never
+routes through ztunnel/HBONE and never muddies the L4 signal under measurement.
+
+**Scrape config is static** (`serverFiles` chart values, `kubernetes_sd` role
+`pod`) — there is no prometheus-operator / ServiceMonitor in this lab. Three jobs:
+`ztunnel` (`app=ztunnel` in `istio-system`, `:15020 /stats/prometheus`), `istiod`
+(`:15014 /metrics`), `waypoint` (`gateway.networking.k8s.io/gateway-name=tenant-waypoint`
+in `demo-app`, `:15020 /stats/prometheus`).
+
+### Honest metric names (what is real vs lab-synthesized)
+
+This is the SigNoz-parity **view**, so the metric names matter. Only **real
+upstream series** are emitted; anything synthesized is named distinctly so nobody
+mistakes it for a native Istio metric.
+
+| Signal (dashboard) | PromQL / source | Real or lab? |
+|---|---|---|
+| TCP opened/sec, closed/sec | `istio_tcp_connections_opened_total`, `istio_tcp_connections_closed_total` | **Real** (native ztunnel 1.29.2) |
+| TCP bytes sent/received | `istio_tcp_sent_bytes_total`, `istio_tcp_received_bytes_total` | **Real** (native ztunnel) |
+| istiod XDS clients | `pilot_xds` | **Real** (istiod) |
+| istiod push latency p95 | `pilot_xds_push_time_bucket` (suffix pinned at live bring-up) | **Real** (istiod) |
+| istiod XDS rejects | `pilot_total_xds_rejects` | **Real** (istiod) |
+| waypoint requests by code | `istio_requests_total`, `istio_request_duration_milliseconds` | **Real** (waypoint Envoy) |
+| **sockets open** | `lab:tcp_sockets_open` **recording rule** | **LAB-synthesized** |
+
+`istio_tcp_sockets_open` and `istio_tcp_connections_failed_total` are **not**
+native ztunnel 1.29.2 series, so they are **not** emitted under those names. For a
+sockets-open view, a Prometheus **recording rule** `lab:tcp_sockets_open` is built
+from `increase()`-based expressions instead of a bare
+`sum(opened) - sum(closed)`. Why: a ztunnel roll **deletes** the old ztunnel pod,
+so its per-pod counters **expire** from Prometheus — a bare cumulative subtraction
+then shows a **false cliff exactly at the measured event** (an artifact of the
+vanished series, not a real drop). `increase()` over a trailing window is reset-
+and disappearance-tolerant, so the rule degrades gracefully across the roll. See
+`apps/observability/prometheus.yaml` for the full comment.
+
+### The harness is the source of truth — Grafana is corroboration
+
+**The drill's verdict metrics (new-connection failures, existing-connection RSTs,
+recovery) come from the slice-3 HARNESS (`results.json`), NOT from Prometheus.**
+Prometheus/Grafana is the operator-facing SigNoz-parity **view** — corroboration
+and situational awareness — not the authority for PASS/FAIL. The harness measures
+at the socket (ECONNRESET vs FIN) and decides; the dashboard shows the shape.
+
+### Access logs require a chart republish
+
+The "app AND Istio access logs" requirement has two halves with different timing:
+
+- **App logs** flow **now**: the apps already log to stdout, Alloy tails them into
+  Loki, and `{namespace="demo-app"} |~ "ECONNRESET|Connection terminated"` is
+  queryable as soon as a drop occurs.
+- **Istio access logs** need a **chart republish**: `meshConfig.accessLogFile:
+  /dev/stdout` (JSON) is set on the umbrella chart (`charts/istio/values.yaml`)
+  and the waypoint `Telemetry` (`demo/waypoint/telemetry.yaml`, re-pointed from the
+  removed tracing placeholder to **access logging**) is enabled — but a meshConfig
+  change only takes effect when the chart is **republished** (bump to `1.0.0-dev2`
+  + move the `mesh` Application's `targetRevision` pin), which happens on `make up`
+  with `GHCR_TOKEN`. So the **collection path (Alloy → Loki) is ready now**; Istio
+  access-log **generation activates on republish**. This is not claimed as live
+  without that republish.
+
+### Network dependency
+
+ArgoCD's repo-server must reach the **public Helm repos**
+`prometheus-community.github.io` and `grafana.github.io` to pull these charts (they
+are *not* mirrored to the private registry). `scripts/up.sh` runs a `curl -sfI`
+reachability check and warns (does not hard-fail — the mesh + app slices come up
+without observability) if they are unreachable.
+
+```bash
+make grafana-ui       # port-forward Grafana  -> http://localhost:3001 (admin/admin)
+make prometheus-ui    # port-forward Prometheus -> http://localhost:9090
+make loki-ui          # port-forward Loki HTTP API -> http://localhost:3100
+make verify-observability   # run only the observability gates
+```
 
 ## Prerequisites
 
@@ -155,7 +254,22 @@ Each gate prints `PASS`/`FAIL`; a single failure fails the run.
     - **L7 traversal proof:** the waypoint's `istio_requests_total` increments
       when `/chain` is driven (port-forward to the waypoint's `15020` metrics).
     - Postgres is **still** out of mesh (its IP absent from every ztunnel dump).
-12. The hygiene scan finds no proprietary identifiers.
+12. **Observability gates** (`scripts/verify-observability.sh`):
+    - the `prometheus`/`loki`/`alloy`/`grafana`/`observability-config` Applications
+      are `Synced`/`Healthy` (retried — they sync on wave 5).
+    - Prometheus `/api/v1/targets` has an **UP** target for the `ztunnel` + `istiod`
+      jobs (waypoint is **best-effort/retried**, not hard-failed before wave 3/4
+      converge).
+    - Prometheus `/api/v1/query` returns data for the **real** names
+      (`istio_tcp_connections_opened/closed_total`, `pilot_xds`,
+      `pilot_total_xds_rejects`) **and** the `lab:tcp_sockets_open` recording rule.
+    - Loki is **ingesting** (namespace label values include `demo-app` +
+      `istio-system`; a broad query returns > 0 streams) and the
+      `ECONNRESET|Connection terminated` LogQL **executes** (200 — may be empty
+      until a drop occurs; gated on ingestion + query-executes, not non-empty).
+    - Grafana `/api/health` is ok, both datasources are provisioned, and the
+      starter dashboard is present.
+13. The hygiene scan finds no proprietary identifiers.
 
 ## `targetRevision` is pinned here (on purpose)
 
@@ -203,17 +317,19 @@ apps/
   apps/waypoint.yaml     tenant-waypoint child app (wave 3)
   apps/{app-a,app-b,app-c}.yaml  the three chained clients (wave 4)
   apps/{probe,load}.yaml drop-measurement probe (wave 3) + load gen (wave 4)
-  observability/         .gitkeep placeholder for a later slice
+  observability/         prometheus/loki/alloy/grafana Helm-repo apps +
+                         observability-config directory app (all wave 5)
 demo/hello/              ambient-enrolled namespace + hello Deployment + Service
 demo/data/              demo-data namespace + postgres + pgbouncer writer/reader
 demo/gateway-api/        vendored upstream Gateway API v1.2.1 standard CRDs
-demo/waypoint/           tenant-waypoint Gateway + HPA + PDB (+ telemetry.yaml.disabled)
+demo/waypoint/           tenant-waypoint Gateway + HPA + PDB + telemetry.yaml (access logging)
+demo/observability/      Grafana starter dashboard ConfigMap (grafana_dashboard=1)
 demo/app-a/             app-a manifests (top level) + Node build context (app/)
 demo/app-b/             app-b manifests + route/DR + Python build context (app/)
 demo/app-c/             app-c manifests + route/DR + Go build context (app/)
 kind/cluster.yaml        1 control-plane + 3 workers, k8s 1.33.7 by digest
 scripts/                 up / down / publish-chart / build-app-images / gen-scram /
                          wait-mesh / ensure-gatewayclass / verify / verify-data /
-                         verify-topology / no-identity-scan
+                         verify-topology / verify-observability / no-identity-scan
 Makefile
 ```

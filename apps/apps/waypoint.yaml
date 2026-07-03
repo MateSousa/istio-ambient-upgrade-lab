@@ -12,8 +12,9 @@
 # not-yet-existent Service would otherwise sit un-Programmed). istiod recomputes
 # route status continuously, so they attach as soon as the Services appear.
 #
-# directory.recurse is false: demo/waypoint holds gateway/hpa/pdb at top level;
-# telemetry.yaml.disabled is intentionally skipped (non-.yaml extension).
+# directory.recurse is false: demo/waypoint holds gateway/hpa/pdb + telemetry.yaml
+# at top level. telemetry.yaml (access logging, enabled in the observability slice)
+# is now a synced *.yaml - the earlier telemetry.yaml.disabled placeholder is gone.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

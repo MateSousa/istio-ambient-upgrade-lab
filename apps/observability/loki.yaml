@@ -1,0 +1,99 @@
+# loki - the log store for the observability stack.
+#
+# Public Helm-repo Application (grafana/loki, exact pin). Stock upstream chart,
+# NOT republished to GHCR; ArgoCD's repo-server needs egress to
+# grafana.github.io (see scripts/up.sh preflight + README).
+#
+# SingleBinary deployment mode with filesystem storage on an emptyDir - the
+# smallest footprint that ingests logs on kind. All the scale-out machinery is
+# off: read/write/backend replicas 0, chunks/results caches off, minio off,
+# gateway off, canary/test off. schemaConfig is tsdb / schema v13 (current).
+# Retention 24h (limits_config.retention_period).
+#
+# [FIX 5] FALLBACK: if the SingleBinary pod CrashLoops on kind (the grafana/loki
+# chart is finicky about storage/schema on constrained nodes), the documented
+# drop-in is the older grafana/loki-stack chart (bundles a monolithic Loki +
+# promtail and "just works" on kind). Swap this Application's chart to
+# grafana/loki-stack (disable its bundled grafana/promtail, keep alloy.yaml as
+# the shipper) and re-point Grafana's Loki datasource at the loki-stack service.
+#
+# sync-wave "5", namespace `observability`, NOT ambient-enrolled (see prometheus.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki
+    targetRevision: 6.55.0
+    helm:
+      releaseName: loki
+      valuesObject:
+        deploymentMode: SingleBinary
+        loki:
+          auth_enabled: false
+          commonConfig:
+            replication_factor: 1
+          storage:
+            type: filesystem
+          schemaConfig:
+            configs:
+              - from: "2024-04-01"
+                store: tsdb
+                object_store: filesystem
+                schema: v13
+                index:
+                  prefix: index_
+                  period: 24h
+          limits_config:
+            retention_period: 24h
+          # kind has no real object store; keep the ruler/compactor filesystem-local.
+          pattern_ingester:
+            enabled: false
+        singleBinary:
+          replicas: 1
+          persistence:
+            enabled: false
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+        # Everything scale-out / cache / gateway / canary OFF.
+        read:
+          replicas: 0
+        write:
+          replicas: 0
+        backend:
+          replicas: 0
+        chunksCache:
+          enabled: false
+        resultsCache:
+          enabled: false
+        minio:
+          enabled: false
+        gateway:
+          enabled: false
+        lokiCanary:
+          enabled: false
+        test:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

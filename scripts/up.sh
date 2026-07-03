@@ -20,6 +20,20 @@ done
 : "${GHCR_TOKEN:?GHCR_TOKEN must be set (PAT with read:packages+write:packages) - needed to publish and to pull the private chart}"
 docker info >/dev/null 2>&1 || { echo "docker daemon not reachable" >&2; exit 1; }
 
+# Observability charts (Prometheus/Loki/Grafana/Alloy) are pulled from the PUBLIC
+# Helm repos by ArgoCD's repo-server. Warn early (do NOT hard-fail - the mesh + app
+# slices come up without them; only the observability apps need this egress) if the
+# repos are unreachable from here, which is a decent proxy for the cluster's reach.
+for repo in \
+  "https://prometheus-community.github.io/helm-charts/index.yaml" \
+  "https://grafana.github.io/helm-charts/index.yaml"; do
+  if curl -sfI --max-time 10 "${repo}" >/dev/null 2>&1; then
+    echo "    reachable: ${repo%/index.yaml}"
+  else
+    echo "WARN: cannot reach ${repo%/index.yaml} - the observability apps (wave 5) will not sync until ArgoCD can pull these public Helm charts. Check egress/proxy." >&2
+  fi
+done
+
 echo "==> kind create cluster (${CLUSTER_NAME})"
 if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
   echo "cluster ${CLUSTER_NAME} already exists, reusing"

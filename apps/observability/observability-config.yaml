@@ -1,0 +1,37 @@
+# observability-config - the config directory app for the observability layer.
+#
+# Directory-source Application (raw manifests from this repo, like the demo apps),
+# NOT a Helm chart. It syncs demo/observability, which currently holds the
+# Grafana dashboard ConfigMap (dashboard-istio-upgrade.yaml). The Grafana sidecar
+# discovers that ConfigMap by its grafana_dashboard=1 label, so the dashboard is
+# delivered as data, decoupled from the grafana chart Application.
+#
+# directory.recurse is false: demo/observability holds only flat *.yaml at the
+# top level. sync-wave "5", namespace `observability`, NOT ambient-enrolled.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MateSousa/istio-ambient-upgrade-lab.git
+    targetRevision: HEAD
+    path: demo/observability
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

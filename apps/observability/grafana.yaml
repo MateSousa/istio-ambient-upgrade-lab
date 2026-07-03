@@ -1,0 +1,83 @@
+# grafana - the single pane over Prometheus + Loki.
+#
+# Public Helm-repo Application (grafana/grafana, exact pin). Stock upstream chart,
+# NOT republished to GHCR; ArgoCD's repo-server needs egress to grafana.github.io.
+#
+# 1 replica, no persistence (dashboards come from provisioning + the sidecar, so
+# nothing is lost on a pod restart). admin/admin inline: an INTENTIONALLY trivial
+# lab credential - this Grafana is only ever reached over a local port-forward on
+# a throwaway kind cluster, never exposed. Do NOT copy this to anything real.
+#
+# Datasources (Prometheus + Loki) are auto-provisioned by fixed uid so the
+# dashboard JSON can reference them stably. Both URLs are in-cluster Service DNS.
+# The dashboard sidecar watches namespace `observability` for ConfigMaps labelled
+# grafana_dashboard=1 - that is how demo/observability/dashboard-istio-upgrade.yaml
+# lands in Grafana without being baked into these values.
+#
+# sync-wave "5", namespace `observability`, NOT ambient-enrolled (see prometheus.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: grafana
+    targetRevision: 8.15.0
+    helm:
+      releaseName: grafana
+      valuesObject:
+        replicas: 1
+        persistence:
+          enabled: false
+        adminUser: admin
+        adminPassword: admin
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        service:
+          type: ClusterIP
+        datasources:
+          datasources.yaml:
+            apiVersion: 1
+            datasources:
+              - name: Prometheus
+                type: prometheus
+                uid: prometheus
+                access: proxy
+                url: http://prometheus-server.observability.svc.cluster.local
+                isDefault: true
+              - name: Loki
+                type: loki
+                uid: loki
+                access: proxy
+                url: http://loki.observability.svc.cluster.local:3100
+        sidecar:
+          dashboards:
+            enabled: true
+            label: grafana_dashboard
+            labelValue: "1"
+            searchNamespace: observability
+            folder: /tmp/dashboards
+            provider:
+              foldersFromFilesStructure: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,183 @@
+# prometheus - the metrics half of the observability stack (Grafana OSS).
+#
+# Public Helm-repo Application (prometheus-community/prometheus, exact pin). We do
+# NOT republish this to the private GHCR OCI registry - it is a stock upstream
+# chart pulled straight from the community repo, so ArgoCD's repo-server needs
+# egress to prometheus-community.github.io (see scripts/up.sh preflight + README).
+#
+# sync-wave "5": AFTER the apps (app-a/b/c + waypoint, wave 4) so every scrape
+# target (ztunnel, istiod, waypoint) already exists when Prometheus starts. It
+# will still discover targets that appear later (kubernetes_sd is dynamic), but
+# waving it last means the first scrape loop already has something to hit.
+#
+# destination namespace `observability` is created here and is deliberately NOT
+# ambient-enrolled: there is no istio.io/dataplane-mode label on it. The stack
+# observes the mesh from OUTSIDE it - enrolling Prometheus would route its scrape
+# traffic through ztunnel/HBONE and muddy exactly the L4 signal we are measuring.
+#
+# server ONLY: alertmanager / node-exporter / kube-state-metrics / pushgateway
+# are all disabled - this lab scrapes Istio component metrics, nothing else.
+# Storage is emptyDir (persistentVolume disabled), retention 2h, scrape 30s.
+#
+# Scrape jobs + recording rule are static chart values (serverFiles), NOT an
+# operator/ServiceMonitor - there is no prometheus-operator in this lab.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus
+    targetRevision: 27.52.0
+    helm:
+      releaseName: prometheus
+      valuesObject:
+        alertmanager:
+          enabled: false
+        kube-state-metrics:
+          enabled: false
+        prometheus-node-exporter:
+          enabled: false
+        prometheus-pushgateway:
+          enabled: false
+        server:
+          replicaCount: 1
+          retention: 2h
+          persistentVolume:
+            enabled: false
+          resources:
+            requests:
+              cpu: 150m
+              memory: 384Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          global:
+            scrape_interval: 30s
+            scrape_timeout: 10s
+        serverFiles:
+          # Recording rule: a lab-synthesized "sockets currently open" view.
+          #
+          # ztunnel 1.29.2 does NOT expose a native istio_tcp_sockets_open series,
+          # so we cannot honestly emit that name. A naive
+          #   sum(istio_tcp_connections_opened_total) - sum(..._closed_total)
+          # LIES precisely at the moment this drill measures: a ztunnel roll
+          # DELETES the old ztunnel pod, so its per-pod counters EXPIRE from
+          # Prometheus. A bare subtraction over the raw cumulative counters then
+          # shows a false cliff (the vanished pod's opened/closed totals drop out
+          # of the sums at slightly different scrape boundaries) exactly at the
+          # event under test - an artifact, not a real drop.
+          #
+          # increase()-over-a-window is reset- AND disappearance-tolerant: it is
+          # computed per-series, counts only what each pod accumulated while it
+          # was present, and simply drops a series once it ages out - no negative
+          # cliff when the old ztunnel goes away. clamp_min floors it at 0. This
+          # is an APPROXIMATION named distinctly (lab:tcp_sockets_open) so nobody
+          # mistakes it for a native Istio metric. It is a VIEW, not a verdict:
+          # PASS/FAIL comes from the slice-3 harness (results.json), not here.
+          recording_rules.yml:
+            groups:
+              - name: lab-tcp
+                rules:
+                  - record: lab:tcp_sockets_open
+                    expr: |
+                      clamp_min(
+                        sum(increase(istio_tcp_connections_opened_total[10m]))
+                        - sum(increase(istio_tcp_connections_closed_total[10m])),
+                        0
+                      )
+          prometheus.yml:
+            rule_files:
+              - /etc/config/recording_rules.yml
+            scrape_configs:
+              - job_name: prometheus
+                static_configs:
+                  - targets:
+                      - localhost:9090
+              # ztunnel: DaemonSet pods in istio-system, app=ztunnel, merged
+              # Envoy/ztunnel metrics on :15020 /stats/prometheus. Emits the
+              # KNOWN-real ztunnel series only: istio_tcp_connections_opened_total,
+              # istio_tcp_connections_closed_total, istio_tcp_sent_bytes_total,
+              # istio_tcp_received_bytes_total. (No istio_tcp_sockets_open /
+              # istio_tcp_connections_failed_total - those are NOT native here;
+              # see the lab:tcp_sockets_open recording rule above.)
+              - job_name: ztunnel
+                metrics_path: /stats/prometheus
+                kubernetes_sd_configs:
+                  - role: pod
+                    namespaces:
+                      names:
+                        - istio-system
+                relabel_configs:
+                  - source_labels: [__meta_kubernetes_pod_label_app]
+                    action: keep
+                    regex: ztunnel
+                  - source_labels: [__meta_kubernetes_pod_ip]
+                    target_label: __address__
+                    replacement: ${1}:15020
+                  - source_labels: [__meta_kubernetes_namespace]
+                    target_label: namespace
+                  - source_labels: [__meta_kubernetes_pod_name]
+                    target_label: pod
+                  - source_labels: [__meta_kubernetes_pod_node_name]
+                    target_label: node
+              # istiod: control-plane metrics on :15014 /metrics. Emits pilot_xds,
+              # pilot_xds_push_time* (histogram - the exact suffix
+              # _bucket/_sum/_count is pinned at live bring-up), pilot_total_xds_rejects.
+              - job_name: istiod
+                metrics_path: /metrics
+                kubernetes_sd_configs:
+                  - role: pod
+                    namespaces:
+                      names:
+                        - istio-system
+                relabel_configs:
+                  - source_labels: [__meta_kubernetes_pod_label_app]
+                    action: keep
+                    regex: istiod
+                  - source_labels: [__meta_kubernetes_pod_ip]
+                    target_label: __address__
+                    replacement: ${1}:15014
+                  - source_labels: [__meta_kubernetes_namespace]
+                    target_label: namespace
+                  - source_labels: [__meta_kubernetes_pod_name]
+                    target_label: pod
+              # waypoint: the tenant-waypoint Envoy pods in demo-app, matched by
+              # the Gateway-managed label gateway.networking.k8s.io/gateway-name.
+              # Metrics on :15020 /stats/prometheus - emits istio_requests_total,
+              # istio_request_duration_milliseconds (L7).
+              - job_name: waypoint
+                metrics_path: /stats/prometheus
+                kubernetes_sd_configs:
+                  - role: pod
+                    namespaces:
+                      names:
+                        - demo-app
+                relabel_configs:
+                  - source_labels: [__meta_kubernetes_pod_label_gateway_networking_k8s_io_gateway_name]
+                    action: keep
+                    regex: tenant-waypoint
+                  - source_labels: [__meta_kubernetes_pod_ip]
+                    target_label: __address__
+                    replacement: ${1}:15020
+                  - source_labels: [__meta_kubernetes_namespace]
+                    target_label: namespace
+                  - source_labels: [__meta_kubernetes_pod_name]
+                    target_label: pod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

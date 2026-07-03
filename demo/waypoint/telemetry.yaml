@@ -1,0 +1,35 @@
+# tenant-waypoint access-logging Telemetry - ENABLED in the observability slice.
+#
+# Previously telemetry.yaml.disabled: it targeted a tracing `otel` extension
+# provider that does not exist in this mesh (Tempo/distributed tracing is
+# de-scoped by default - over-engineered for an L4-RST question). Re-pointed here
+# to ACCESS LOGGING, which needs no collector: it rides meshConfig.accessLogFile
+# (/dev/stdout, JSON), set on the umbrella chart's istiod values. So the waypoint
+# Envoy writes per-request access logs to stdout, the Alloy DaemonSet tails them
+# into Loki, and the dashboard's Loki panel can surface connection errors.
+#
+# The waypoint app (apps/apps/waypoint.yaml) reads demo/waypoint with
+# directory.recurse:false and picks up *.yaml, so this now syncs on wave 3.
+#
+# CAVEAT (see charts/istio/values.yaml): meshConfig.accessLogFile is a chart-level
+# change that only takes effect on chart REPUBLISH (1.0.0-dev2 + mesh pin bump via
+# `make up` with GHCR_TOKEN). Until then this CR is applied but the proxies are not
+# yet emitting access logs. The collection path is ready; generation waits on the
+# republish.
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: tenant-waypoint
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/component: tenant-waypoint
+    app.kubernetes.io/managed-by: raw-manifest
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: tenant-waypoint
+  accessLogging:
+    - providers:
+        - name: envoy
+      disabled: false
