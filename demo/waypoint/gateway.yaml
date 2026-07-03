@@ -25,6 +25,7 @@ metadata:
   labels:
     app.kubernetes.io/component: tenant-waypoint
     app.kubernetes.io/managed-by: raw-manifest
+    istio.io/waypoint-for: service
 spec:
   gatewayClassName: istio-waypoint
   listeners:

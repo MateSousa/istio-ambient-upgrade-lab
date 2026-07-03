@@ -1,6 +1,6 @@
 # probe - the per-node drop-measurement probe + echo pairs (slice 3).
 #
-# sync-wave "3": alongside app-a, after the ambient demo-app namespace (wave 1)
+# sync-wave "3": alongside the waypoint (wave 3), after the ambient demo-app namespace (wave 1)
 # exists so these Pods enrol in the datapath. Like app-a, the harness image is
 # built and kind-loaded before the app-of-apps syncs (scripts/build-app-images.sh,
 # imagePullPolicy: IfNotPresent, no registry prefix), so wave-3 finds it present.
