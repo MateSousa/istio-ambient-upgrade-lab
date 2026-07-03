@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
-# Fail if any proprietary identifier leaks into this public repo.
-# Greps the whole tree (excluding .git and vendored subchart .tgz artifacts) for
-# private org names, AWS account IDs, ECR hosts, internal FQDNs, and internal
-# namespaces/emails. Exits non-zero on any hit. Runs pre-push and in verify.sh.
+# Thin wrapper over the tested Go hygiene scanner (harness/internal/scan, run via
+# `harness scan`). This script only locates the repo root + harness module and
+# execs the subcommand; all detection logic lives in Go (no grep fallback, so
+# there is a single implementation that cannot drift).
+#
+# Exit-code contract (the only thing any caller relies on: 0 vs non-zero;
+# verify.sh pipes stdout to /dev/null, the Makefile ignores it):
+#   0        clean tree
+#   non-zero a finding, or the scan could not run -> the push/gate is blocked
+# `harness scan` itself returns 0/1/2 (clean/finding/IO-error), but `go run`
+# collapses any non-zero program exit to 1; that is fine here because no caller
+# distinguishes 1 from 2. If the Go toolchain is absent this FAILS CLOSED
+# (exit 2, this script's own exit) rather than passing an unscanned tree.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
 
-PATTERN='example-org|123456789012|123456789012|123456789012|123456789012|dkr\.ecr|example\.dev|opentelemetry-operator-system|platform@example-org'
-
-# -I skips binary files. Exclusions:
-#   .git                  - version-control internals
-#   *.tgz                 - vendored subchart tarballs from helm dependency build
-#   no-identity-scan.sh   - this file; it necessarily contains the pattern literal
-if grep -rInE -i "$PATTERN" . \
-    --exclude-dir=.git \
-    --exclude='*.tgz' \
-    --exclude='no-identity-scan.sh'; then
-  echo ""
-  echo "FAIL: proprietary identifier(s) found above. Remove before pushing." >&2
-  exit 1
+if ! command -v go >/dev/null 2>&1; then
+  echo "FAIL: go toolchain not found; cannot run the hygiene scanner (failing closed)." >&2
+  exit 2
 fi
 
-echo "PASS: no proprietary identifiers found."
+cd "$ROOT/harness"
+exec go run ./cmd/harness scan --repo-root ..

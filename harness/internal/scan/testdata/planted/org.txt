@@ -1,0 +1,2 @@
+deploy target: example-org-mesh primary cluster
+mixed case must also trip: example-org and example-org

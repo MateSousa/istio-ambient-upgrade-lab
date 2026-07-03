@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# Pre-push hygiene gate: block the push if any proprietary identifier would leak
+# into this public repo. Opt-in per clone via `make install-hooks` (which points
+# core.hooksPath at .githooks); bypassable with `git push --no-verify`. It is a
+# convenience only - `make scan` and CI are the real guarantee.
+#
+# POSIX sh, no bashisms. git passes the remote name/URL as args and the refs on
+# stdin; we ignore both and scan the whole tree. A non-zero exit aborts the push.
+set -eu
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec "$ROOT/scripts/no-identity-scan.sh"

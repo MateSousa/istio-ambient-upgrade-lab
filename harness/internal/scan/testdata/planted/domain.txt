@@ -1,0 +1,1 @@
+ArgoCD lives at argocd.example.dev behind the platform account.
