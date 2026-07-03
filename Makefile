@@ -6,7 +6,7 @@
 SHELL := /usr/bin/env bash
 
 .PHONY: help up down publish-chart build-images verify scan argocd-password argocd-ui \
-	harness-build harness-test measure
+	harness-build harness-test measure load
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -38,6 +38,9 @@ harness-test: ## Run the hermetic harness unit tests (no cluster needed - CI ent
 
 measure: ## Live: fire the ztunnel upgrade trigger and measure drops (needs GHCR_TOKEN + cluster)
 	cd harness && go run ./cmd/harness measure --repo-root .. $(MEASURE_ARGS)
+
+load: ## Run the concurrent load generator locally (ECHO_ADDR etc. via env/flags)
+	cd harness && go run ./cmd/harness load $(LOAD_ARGS)
 
 argocd-password: ## Print the initial ArgoCD admin password
 	@kubectl -n argocd get secret argocd-initial-admin-secret \

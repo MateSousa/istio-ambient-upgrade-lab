@@ -1,0 +1,297 @@
+# Per-node concurrent load generators (slice 4).
+#
+# One Deployment per WORKER node, each pinned by nodeName, running `harness
+# load`. Each pod sustains CONCURRENCY workers that hold a mix of long-lived and
+# short-lived raw-TCP connections to the SAME-NODE echo (the existing per-node
+# echo Service from demo/probe), so the ztunnel roll on that node is observed
+# under real held-conn pressure rather than with a single idle probe connection.
+#
+# Two verdict-bearing paths (both to the same-node echo, one ztunnel mediates):
+#   - long-lived workers hold a connection >= HOLD_MS, trickle a keepalive, and
+#     reconnect carrying the reset conn's id when the drain RSTs them;
+#   - short-lived workers churn NEW connections, emitting ONLY the
+#     new-connection-safety signal (NewConnAttemptOK/Fail).
+# A THIRD, NON-VERDICT path drives realistic app-a GET /query traffic (fresh TCP
+# per request, rate-limited by MAX_RPS); its failures go to a stderr diagnostic
+# counter ONLY and can never reach the drop verdict.
+#
+# Distinct from the probe: pods are labelled `app: load` with a `load-node`
+# matchLabel (NOT probe-node), so the probe Deployment's {app:probe,
+# probe-node:workerN} selector never adopts them and vice-versa. Resources are
+# bumped well above the probe's 64Mi/100m because a 24-worker pod is far heavier.
+# HOLD_MS=310000 lets one held session span the whole default 5-minute
+# observation deadline, so a long-lived worker never deliberately closes
+# mid-window (which would look like a gap). Readiness/liveness gate on :8080,
+# which `harness load` opens only after ALL long-lived workers have connected.
+#
+# ---------------------------------------------------------------- worker 1 ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-worker1
+  namespace: demo-app
+  labels:
+    app: load
+    load-node: worker1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load
+      load-node: worker1
+  template:
+    metadata:
+      labels:
+        app: load
+        load-node: worker1
+    spec:
+      nodeName: istio-ambient-lab-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: load
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["load"]
+          env:
+            - name: ECHO_ADDR
+              value: "echo-worker1:9000"
+            - name: APPA_URL
+              value: "http://app-a:3000/query"
+            - name: CONCURRENCY
+              value: "24"
+            - name: LONG_FRACTION
+              value: "0.4"
+            - name: HOLD_MS
+              value: "310000"
+            - name: KEEPALIVE_MS
+              value: "20000"
+            - name: SHORT_INTERVAL_MS
+              value: "250"
+            - name: RAMP_MS
+              value: "10000"
+            - name: MAX_RPS
+              value: "40"
+            - name: READINESS_ADDR
+              value: ":8080"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+              name: health
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          # The gate on :8080 opens only AFTER every long-lived worker has
+          # established its first connection, so Ready means the trigger will
+          # fire under full held-conn pressure. startupProbe holds liveness and
+          # readiness off (30 x 5s = 150s slack) while the ramp completes and all
+          # long workers connect, so a slow ramp never restarts the pod.
+          startupProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 10
+            failureThreshold: 6
+---
+# ---------------------------------------------------------------- worker 2 ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-worker2
+  namespace: demo-app
+  labels:
+    app: load
+    load-node: worker2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load
+      load-node: worker2
+  template:
+    metadata:
+      labels:
+        app: load
+        load-node: worker2
+    spec:
+      nodeName: istio-ambient-lab-worker2
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: load
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["load"]
+          env:
+            - name: ECHO_ADDR
+              value: "echo-worker2:9000"
+            - name: APPA_URL
+              value: "http://app-a:3000/query"
+            - name: CONCURRENCY
+              value: "24"
+            - name: LONG_FRACTION
+              value: "0.4"
+            - name: HOLD_MS
+              value: "310000"
+            - name: KEEPALIVE_MS
+              value: "20000"
+            - name: SHORT_INTERVAL_MS
+              value: "250"
+            - name: RAMP_MS
+              value: "10000"
+            - name: MAX_RPS
+              value: "40"
+            - name: READINESS_ADDR
+              value: ":8080"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+              name: health
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          startupProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 10
+            failureThreshold: 6
+---
+# ---------------------------------------------------------------- worker 3 ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-worker3
+  namespace: demo-app
+  labels:
+    app: load
+    load-node: worker3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load
+      load-node: worker3
+  template:
+    metadata:
+      labels:
+        app: load
+        load-node: worker3
+    spec:
+      nodeName: istio-ambient-lab-worker3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: load
+          image: harness:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["load"]
+          env:
+            - name: ECHO_ADDR
+              value: "echo-worker3:9000"
+            - name: APPA_URL
+              value: "http://app-a:3000/query"
+            - name: CONCURRENCY
+              value: "24"
+            - name: LONG_FRACTION
+              value: "0.4"
+            - name: HOLD_MS
+              value: "310000"
+            - name: KEEPALIVE_MS
+              value: "20000"
+            - name: SHORT_INTERVAL_MS
+              value: "250"
+            - name: RAMP_MS
+              value: "10000"
+            - name: MAX_RPS
+              value: "40"
+            - name: READINESS_ADDR
+              value: ":8080"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+              name: health
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          startupProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 10
+            failureThreshold: 6

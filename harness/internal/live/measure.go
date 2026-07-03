@@ -145,12 +145,31 @@ func fireTrigger(ctx context.Context, cfg MeasureConfig, dyn dynamic.Interface) 
 	}
 }
 
-// waitProbesReady blocks until all Pods labelled app=probe in ns are Ready, or
-// the timeout elapses.
+// probeLoadSelector selects BOTH the per-node probe Pods and the concurrent
+// load-generator Pods. Both emit the analyzed JSON-line ConnEvent stream and
+// both gate readiness on their held connection(s), so readiness-wait and
+// event-collection must cover the union - never just app=probe, or the load
+// pods' events (and a crashlooping load pod's absence) would be silently
+// ignored. echo Pods (app=echo) are deliberately excluded.
+const probeLoadSelector = "app in (probe,load)"
+
+// containerForPod returns the name of the ConnEvent-emitting container in a
+// probe-or-load Pod: the load Pods run container "load", the probe Pods run
+// container "probe". Keyed off the app label so log collection always reads the
+// right container even as both kinds coexist in the namespace.
+func containerForPod(p *corev1.Pod) string {
+	if p.Labels["app"] == "load" {
+		return "load"
+	}
+	return "probe"
+}
+
+// waitProbesReady blocks until all Pods matching probeLoadSelector in ns are
+// Ready, or the timeout elapses.
 func waitProbesReady(ctx context.Context, cs kubernetes.Interface, ns string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: "app=probe"})
+		pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: probeLoadSelector})
 		if err == nil && len(pods.Items) > 0 {
 			allReady := true
 			for i := range pods.Items {
@@ -174,12 +193,16 @@ func waitProbesReady(ctx context.Context, cs kubernetes.Interface, ns string, ti
 	}
 }
 
-// collectEvents reads the logs of every app=probe Pod and parses the JSON-line
-// ConnEvents they emitted during the observation window. It bounds log
+// collectEvents reads the logs of every probe-and-load Pod and parses the
+// JSON-line ConnEvents they emitted during the observation window. It bounds log
 // collection with SinceTime=since so only THIS run's events are ingested; older
-// events from a prior run against the same long-lived probe Pods are skipped.
+// events from a prior run against the same long-lived Pods are skipped. Each
+// Pod's log is read from its ConnEvent-emitting container (containerForPod), and
+// a per-Pod GetLogs error (e.g. a crashlooping load Pod with no logs yet) is
+// logged and skipped so it never drops the OTHER Pods' events - in particular
+// never the probe's new-conn-safety signal.
 func collectEvents(ctx context.Context, cs kubernetes.Interface, ns string, since time.Time) ([]model.ConnEvent, error) {
-	pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: "app=probe"})
+	pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: probeLoadSelector})
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +210,7 @@ func collectEvents(ctx context.Context, cs kubernetes.Interface, ns string, sinc
 	var events []model.ConnEvent
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		stream, err := cs.CoreV1().Pods(ns).GetLogs(p.Name, &corev1.PodLogOptions{Container: "probe", SinceTime: &sinceTime}).Stream(ctx)
+		stream, err := cs.CoreV1().Pods(ns).GetLogs(p.Name, &corev1.PodLogOptions{Container: containerForPod(p), SinceTime: &sinceTime}).Stream(ctx)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: logs %s: %v\n", p.Name, err)
 			continue
