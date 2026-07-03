@@ -1,14 +1,16 @@
 # demo-app namespace, ambient-enrolled.
 #
 # istio.io/dataplane-mode: ambient is the enrollment label - it places every pod
-# in this namespace into the mesh via ztunnel, with no sidecar injection. PSA is
-# set to privileged so the workload isn't blocked if enforcement is turned on.
+# in this namespace into the mesh via ztunnel, with no sidecar injection. The
+# nginx workload needs no elevated PSA - ambient adds no sidecar and no privileged
+# containers to app pods, so baseline is sufficient (only istio-system/cni/ztunnel
+# require privileged, handled in mesh.yaml).
 apiVersion: v1
 kind: Namespace
 metadata:
   name: demo-app
   labels:
     istio.io/dataplane-mode: ambient
-    pod-security.kubernetes.io/enforce: privileged
-    pod-security.kubernetes.io/audit: privileged
-    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline

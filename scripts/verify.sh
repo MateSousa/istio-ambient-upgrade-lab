@@ -141,7 +141,7 @@ else
     rm -f "${pf_out}"
     if [[ -z "${dump}" ]]; then
       fail "could not read ztunnel config_dump on node ${pod_node}"
-    elif echo "${dump}" | grep -q "${pod_ip}"; then
+    elif echo "${dump}" | grep -q "\"${pod_ip}\""; then
       pass "hello pod IP ${pod_ip} present in ztunnel ${zt_pod} config_dump (datapath enrolled)"
     else
       fail "hello pod IP ${pod_ip} NOT in ztunnel ${zt_pod} config_dump (not enrolled in datapath)"
