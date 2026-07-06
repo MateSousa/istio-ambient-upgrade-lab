@@ -1,24 +1,15 @@
 #!/usr/bin/env bash
-# scenario-reset.sh - roll the RUNNING cluster back to the 1.29.2 baseline. Slice 8.
+# scenario-reset.sh - roll the running cluster back to the 1.29.2 baseline.
 #
-# CLUSTER-DEEP (board-mandated): this is NOT a working-tree-only `git checkout`.
-# It rewrites Chart.yaml back to the 1.29.2 baseline (all four deps + appVersion),
-# sets the umbrella version to a FRESH -dev<timestamp> baseline (so GHCR
-# immutability is satisfied and ArgoCD is FORCED to re-pull even though the istio
-# contents are the old 1.29.2), repoints mesh.yaml targetRevision at it, re-vendors
-# and PUBLISHES the chart, and commits+pushes to main - so ArgoCD actually rolls
-# the LIVE cluster back to 1.29.2. A local file revert alone would not move the
-# running mesh.
+# Cluster-deep, not a working-tree `git checkout`: it rewrites Chart.yaml back to
+# 1.29.2 but sets a fresh -dev<timestamp> umbrella version (so GHCR immutability
+# holds and ArgoCD is forced to re-pull), repoints targetRevision, re-vendors,
+# publishes, and commits+pushes to main - so ArgoCD actually rolls the live cluster
+# back. A local file revert alone would not move the running mesh.
 #
-# After a PATCH hop this reliably un-does the roll. After a MINOR hop it may NOT:
-# a minor touches CRDs and ArgoCD prune/selfHeal can cascade-delete CRs, which a
-# chart-version rollback cannot un-prune. The GUARANTEED clean slate - and the
-# REQUIRED recovery after a minor hop - is a full rebuild:
-#
-#     make down && make up
-#
-# GIT WRITES TO MAIN (by design): the targetRevision bump must land on the branch
-# ArgoCD watches (main) or the mesh Application never re-pulls the baseline chart.
+# Reliable after a patch hop. After a minor hop it may not recover (CRD prune
+# cascade can delete CRs a chart rollback cannot un-prune); the guaranteed clean
+# slate is `make down && make up`.
 set -euo pipefail
 
 # shellcheck source=scripts/scenarios/scenario-lib.sh
@@ -32,10 +23,8 @@ FRESH="$(scen_fresh_version patch)"
 
 scen_info "resetting all four deps + appVersion to ${BASELINE}; fresh umbrella baseline ${FRESH}"
 
-# Rewrite the four INDENTED dep `version:` lines + the top-level appVersion back
-# to the baseline, then set the col-0 umbrella `version:` to the fresh baseline.
-# The indented-vs-col-0 anchoring keeps the three version-ish line kinds separate
-# (same invariant the Go bumpChart tests pin).
+# Indented `version:` lines + appVersion -> baseline; the col-0 umbrella `version:`
+# -> fresh baseline. The indent-vs-col-0 anchoring keeps the three line kinds apart.
 tmp="$(mktemp)"
 sed -E \
   -e 's|^([[:space:]]+version:[[:space:]]*).*$|\1'"${BASELINE}"'|' \

@@ -1,17 +1,9 @@
 #!/usr/bin/env bash
-# scenario-lib.sh - shared helpers for the upgrade-scenario scripts (slice 8).
-#
-# This file is SOURCED, never executed. Each scenario sets `set -euo pipefail`
-# itself, sources this lib, installs a restore trap, and drives one scenario.
-#
-# It provides: repo-root resolution; target-node resolution; ArgoCD selfHeal
-# snapshot/patch/restore for named Applications; the ONE fresh-version authority
-# (`harness next-version`, so a run never invents a chart version in shell); jq
-# JSON assertion helpers with a python3 fallback; a trap-restore installer; and
-# PASS/FAIL printers mirroring scripts/verify.sh.
-#
-# No secret is ever echoed here: GHCR_TOKEN is only ever read from the
-# environment by the scripts this lib helps, never printed.
+# scenario-lib.sh - shared helpers for the upgrade-scenario scripts. Sourced, never
+# executed; each scenario sets its own `set -euo pipefail`, sources this, installs a
+# restore trap, and drives one scenario. Provides node/version resolution, ArgoCD
+# selfHeal snapshot/restore, the single fresh-version authority (harness
+# next-version), jq/python3 JSON assertion helpers, and PASS/FAIL printers.
 
 # shellcheck shell=bash
 
@@ -40,11 +32,9 @@ scen_finish() {
 }
 
 # ------------------------------------------------------------- trap helper ----
-# scen_install_trap <fn>: run <fn> on EXIT/INT/TERM. <fn> must be idempotent so a
-# signal mid-scenario followed by the EXIT trap does not double-apply. Expanding
-# <fn> NOW (double quotes) is intentional: it registers the named function so the
-# trap calls it directly; single-quoting would defer expansion of $1, which is out
-# of scope when the signal fires.
+# scen_install_trap <fn>: run <fn> on EXIT/INT/TERM. <fn> must be idempotent. The
+# double quotes expand $1 now so the named function is baked into the trap (it is
+# out of scope when the signal fires).
 scen_install_trap() {
   # shellcheck disable=SC2064
   trap "$1" EXIT INT TERM
@@ -61,11 +51,9 @@ scen_resolve_node() {
   echo "${node}"
 }
 
-# scen_deploys_on_node <namespace> <node> <label-selector>: echo (space-joined)
-# the Deployment names in <namespace> matching <label-selector> whose pod
-# template is pinned (nodeName) to <node>. Robust to kind's worker naming (the
-# first worker has no numeric suffix) because it filters on the actual nodeName,
-# not a name-to-suffix guess.
+# scen_deploys_on_node <namespace> <node> <label-selector>: echo (space-joined) the
+# Deployment names matching <label-selector> whose pod template is nodeName-pinned
+# to <node>. Filters on the actual nodeName, so it is robust to kind worker naming.
 scen_deploys_on_node() {
   local ns="$1" node="$2" sel="$3"
   kubectl -n "${ns}" get deploy -l "${sel}" \
@@ -92,11 +80,10 @@ scen_chart_version() {
   awk '/^version:/ {print $2; exit}' "${ROOT}/charts/istio/Chart.yaml"
 }
 
-# scen_fresh_version <patch|minor>: the ONE place a scenario obtains the next
-# umbrella version. Delegates to `harness next-version` so the increment + the
-# mandatory -dev<runTag> prerelease + the <2.0.0 bound all come from the Go
-# authority, never from shell arithmetic. The run tag is a wall-clock timestamp,
-# which also guarantees GHCR immutability (a never-before-published version).
+# scen_fresh_version <patch|minor>: the single place a scenario obtains the next
+# umbrella version. Delegates to `harness next-version` so the increment, the
+# mandatory -dev<runTag> prerelease, and the <2.0.0 bound come from the Go authority,
+# never shell arithmetic. The timestamp run tag also guarantees GHCR immutability.
 scen_fresh_version() {
   local hop="$1" cur tag
   cur="$(scen_chart_version)"

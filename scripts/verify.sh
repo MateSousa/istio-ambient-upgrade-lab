@@ -98,10 +98,8 @@ fi
 
 # ------------------------------------ CNI reconcileIptablesOnStartup == true --
 echo "== gate: reconcileIptablesOnStartup effectively true =="
-# The chart value cni.ambient.reconcileIptablesOnStartup (1.29 default: true)
-# renders into the istio-cni-config ConfigMap as AMBIENT_RECONCILE_POD_RULES_ON_STARTUP.
-# This is the precondition that lets the CNI DaemonSet roll without dropping
-# existing ambient connections - assert the live value is exactly "true".
+# cni.ambient.reconcileIptablesOnStartup renders into istio-cni-config as
+# AMBIENT_RECONCILE_POD_RULES_ON_STARTUP; "true" is the CNI-roll no-drop precondition.
 reconcile="$(kubectl -n istio-system get configmap istio-cni-config \
   -o jsonpath='{.data.AMBIENT_RECONCILE_POD_RULES_ON_STARTUP}' 2>/dev/null)"
 if [[ "${reconcile,,}" == "true" ]]; then
@@ -125,8 +123,7 @@ else
     fail "no ztunnel pod found on node ${pod_node}"
   else
     echo "   hello pod ${pod_ip} on node ${pod_node}, querying ztunnel ${zt_pod}"
-    # ztunnel's admin server (config_dump) is on localhost:15000 - port-forward
-    # to this specific ztunnel and grep for the pod IP in its workload config.
+    # ztunnel's config_dump is on admin port 15000; grep the pod IP in its workloads.
     pf_out="$(mktemp)"
     kubectl -n istio-system port-forward "pod/${zt_pod}" 15000:15000 >"${pf_out}" 2>&1 &
     pf_pid=$!

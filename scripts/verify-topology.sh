@@ -1,27 +1,14 @@
 #!/usr/bin/env bash
-# Topology gates for slice 5. Proves the full three-service chain and the L7
-# tenant waypoint are actually wired up, not merely present:
-#   - the istio-waypoint GatewayClass is Accepted (the CRD-registration gate;
-#     without it istiod never reconciles the Gateway).
-#   - app-b (Python/SQLAlchemy) and app-c (Go/pgx) are enrolled in their nodes'
-#     ztunnel datapath, and each serves /readyz + /query with a widgets row.
-#   - both are persistent demo_app clients in pgbouncer (SHOW CLIENTS by
-#     application_name), i.e. each holds its own pool.
-#   - app-a GET /chain returns rows stitched from a -> b -> c.
-#   - the Gateway tenant-waypoint is Programmed=True and its auto-managed Envoy
-#     Deployment has >= 2 available replicas.
-#   - app-b + app-c Services carry istio.io/use-waypoint == the Gateway name.
-#   - the DestinationRules exist with the _common timeouts.
-#   - L7 is actually traversed: the waypoint's istio_requests_total increments
-#     when /chain is driven.
-#   - Postgres is STILL out of mesh (its IP absent from every ztunnel dump).
+# Topology gates: the three-service chain and the L7 tenant waypoint are wired up,
+# not merely present. Proves the istio-waypoint GatewayClass is Accepted; app-b/app-c
+# are datapath-enrolled and serve a widgets row; both hold their own pgbouncer pool;
+# app-a GET /chain stitches a -> b -> c; the Gateway is Programmed with >= 2 Envoy
+# replicas; the use-waypoint labels + DestinationRules are set; the waypoint's
+# istio_requests_total increments when /chain is driven (L7 actually traversed); and
+# Postgres is still out of mesh. Invoked from verify.sh; standalone-runnable.
 #
-# Invoked from verify.sh; standalone-runnable. Same PASS/FAIL + non-zero-on-fail
-# convention as verify.sh / verify-data.sh.
-#
-# NOTE (FIX 3): ArgoCD's built-in health check for a gateway.networking.k8s.io
-# Gateway keys on the Programmed=True condition - so the "waypoint app Healthy"
-# in ArgoCD and the Programmed gate below are the same signal.
+# ArgoCD's Gateway health check keys on Programmed=True, so "waypoint app Healthy"
+# and the Programmed gate below are the same signal.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -88,7 +75,7 @@ waypoint_requests_total() {
   echo "${out}" | awk '/^istio_requests_total\{/ {s+=$NF} END {printf "%d", s+0}'
 }
 
-# ------------------------------------------- gate: GatewayClass Accepted (FIX 2) --
+# ------------------------------------------- gate: GatewayClass Accepted -------
 echo "== gate: GatewayClass/istio-waypoint Accepted =="
 gc_accepted="$(kubectl get gatewayclass istio-waypoint \
   -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}' 2>/dev/null)"

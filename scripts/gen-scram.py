@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-# Regenerate the SCRAM-SHA-256 verifier literals used across the data slice.
-#
-# The SAME verifier string is used in three places and MUST match byte-for-byte:
-#   - demo/data/postgres.yaml       : CREATE ROLE demo_app ... PASSWORD '<verifier>'
-#   - demo/data/pgbouncer-config.yaml: userlist.txt  "demo_app" "<verifier>"
-#   - the plaintext password ('demo_app_pw') is what pgbouncer (outbound) and
-#     app-a authenticate with; PgBouncer/Postgres verify it against the verifier.
-#
-# Salts are fixed here so the literals are reproducible for the lab. A real
-# deployment uses random per-credential salts. Run:  python3 scripts/gen-scram.py
+# Regenerate the SCRAM-SHA-256 verifier literals for the data path. The same
+# verifier must match byte-for-byte in demo/data/postgres.yaml (CREATE ROLE ...
+# PASSWORD) and demo/data/pgbouncer-config.yaml (userlist.txt). Salts are fixed
+# here for reproducibility; a real deployment uses random per-credential salts.
+# Run:  python3 scripts/gen-scram.py
 import base64
 import hashlib
 import hmac

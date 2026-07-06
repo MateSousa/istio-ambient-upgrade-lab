@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Build the local demo application images and load them into the kind cluster,
-# so that when ArgoCD syncs the app workloads (imagePullPolicy: IfNotPresent,
-# no registry prefix) the kubelet finds the image already present and never
-# tries to pull it. Must run BEFORE the root app-of-apps is applied.
+# Build the demo app images and kind-load them. The apps use imagePullPolicy
+# IfNotPresent with no registry prefix, so this must run before the app-of-apps.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

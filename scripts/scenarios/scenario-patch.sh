@@ -1,19 +1,12 @@
 #!/usr/bin/env bash
-# scenario-patch.sh - the PATCH hop (same-minor ztunnel bump), slice 8.
+# scenario-patch.sh - the patch hop (same-minor ztunnel bump). The harness git-bump
+# trigger rewrites the ztunnel dep + umbrella version, publishes a fresh chart to
+# GHCR, bumps the mesh targetRevision, and commits+pushes to main; ArgoCD syncs the
+# roll and the harness measures it. Skew rules are trivially met, so expect PASS.
 #
-# Bumps ztunnel 1.29.2 -> 1.29.5 as a Git-synced version bump (the AC-satisfying
-# path): the harness git-bump trigger rewrites the ztunnel dep + umbrella version
-# in Chart.yaml, `helm dependency update`s, publishes a FRESH umbrella chart to
-# GHCR, bumps the mesh Application targetRevision, and commits+pushes to main.
-# ArgoCD then syncs the roll and the harness measures it. Skew rules are trivially
-# met for a same-minor hop, so the expected outcome is PASS.
-#
-# GIT WRITES TO MAIN (by design): a throwaway branch is OFF the table. demo-root
-# tracks HEAD and the mesh Application only rolls when the published chart +
-# targetRevision bump actually LAND on the branch ArgoCD watches (main) - a bump
-# stranded on a side branch produces no roll, which the analyzer surfaces as ERROR
-# no-rollout-observed. Each run therefore commits to main and accumulates one more
-# immutable GHCR chart version (prune later via the GHCR UI / `gh api` if desired).
+# Writes to main by design: demo-root tracks HEAD, so the mesh only rolls when the
+# chart + targetRevision bump land on the branch ArgoCD watches. Each run mints one
+# more immutable GHCR chart version.
 set -euo pipefail
 
 # shellcheck source=scripts/scenarios/scenario-lib.sh

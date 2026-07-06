@@ -1,29 +1,17 @@
 #!/usr/bin/env bash
-# scenario-minor.sh - the MINOR hop (cross-minor, all four deps), slice 8.
-# ==============================================================================
-# TERMINAL SCENARIO - RUN THIS LAST.
-# ==============================================================================
+# scenario-minor.sh - the minor hop (cross-minor, all four deps). RUN THIS LAST.
 #
-# Bumps ALL FOUR deps (base/cni/istiod/ztunnel) + appVersion 1.29.2 -> 1.30.0 and
-# the umbrella version, as a Git-synced bump. A minor hop crosses a minor, is
-# governed by the skew rule (istiod-first, <=1-minor data-plane skew), and TOUCHES
-# CRDs - which is why it is deliberately run last and is allowed to end in
-# FAIL/ERROR as a legitimate, INFORMATIVE outcome (it emits a MEASURED report;
-# PASS is NOT required here).
+# Bumps all four deps + appVersion 1.29.2 -> 1.30.0 as a Git-synced bump. A minor
+# hop is governed by the skew rule and touches CRDs, so it is run last and may end
+# in FAIL/ERROR as a legitimate outcome - it emits a measured report; PASS is not
+# required.
 #
-# HAZARD WARNING (why recovery may need a full rebuild):
-#   * This lab vendors Gateway API v1.2.1 CRDs. Istio 1.30's bundled/expected
-#     Gateway API CRD set differs; a minor hop can leave the Gateway API and istio
-#     CRDs in a mutually-incompatible state.
-#   * ArgoCD prune + selfHeal make CRD changes a CASCADE: a renamed/removed CRD can
-#     prune every CR of that kind mesh-wide.
-#   * Because of that cascade, scenario-reset.sh may NOT be able to un-wedge a
-#     minor-hop cluster (it rolls the chart back, but cannot always un-prune CRs).
-#   * GUARANTEED recovery after a minor hop is a clean rebuild:  make down && make up
+# Recovery hazard: this lab vendors Gateway API v1.2.1 CRDs, whose set differs from
+# istio 1.30's; a minor hop can leave them mutually incompatible, and ArgoCD
+# prune/selfHeal turn a CRD change into a cascade that can prune every CR of a kind.
+# scenario-reset may not un-wedge that, so guaranteed recovery is `make down && make up`.
 #
-# GIT WRITES TO MAIN (by design): like the patch scenario, the bump must land on
-# the branch ArgoCD watches (main) or there is no roll. This accumulates one more
-# immutable GHCR chart version.
+# Writes to main by design (or there is no roll), minting one more GHCR chart version.
 set -euo pipefail
 
 # shellcheck source=scripts/scenarios/scenario-lib.sh
@@ -72,6 +60,6 @@ scen_info "rendering the Markdown report"
 
 echo ""
 echo "MINOR HOP COMPLETE (verdict: ${verdict}). If the cluster is wedged, recover with: make down && make up"
-# Exit 0: the scenario's job is to PRODUCE a measured report, which it did. The
-# verdict lives in results.json / report.md, not in this script's exit code.
+# Exit 0: the job is to produce a measured report; the verdict lives in
+# results.json / report.md, not in this script's exit code.
 exit 0

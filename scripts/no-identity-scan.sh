@@ -1,17 +1,8 @@
 #!/usr/bin/env bash
-# Thin wrapper over the tested Go hygiene scanner (harness/internal/scan, run via
-# `harness scan`). This script only locates the repo root + harness module and
-# execs the subcommand; all detection logic lives in Go (no grep fallback, so
-# there is a single implementation that cannot drift).
-#
-# Exit-code contract (the only thing any caller relies on: 0 vs non-zero;
-# verify.sh pipes stdout to /dev/null, the Makefile ignores it):
-#   0        clean tree
-#   non-zero a finding, or the scan could not run -> the push/gate is blocked
-# `harness scan` itself returns 0/1/2 (clean/finding/IO-error), but `go run`
-# collapses any non-zero program exit to 1; that is fine here because no caller
-# distinguishes 1 from 2. If the Go toolchain is absent this FAILS CLOSED
-# (exit 2, this script's own exit) rather than passing an unscanned tree.
+# Thin wrapper over the Go hygiene scanner (harness/internal/scan, `harness scan`);
+# all detection logic lives in Go. Exit 0 = clean tree, non-zero = a finding or the
+# scan could not run (fail-closed: a missing Go toolchain exits 2 rather than
+# passing an unscanned tree).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

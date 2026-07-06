@@ -1,31 +1,20 @@
 #!/usr/bin/env bash
-# scenario-drain.sh - the ZERO-DROP cordon/drain mitigation (slice 8).
+# scenario-drain.sh - the zero-drop cordon/drain mitigation. Draining the harness
+# workloads off a node before its ztunnel rolls means that node's roll resets zero
+# attributable connections, while the rest of the mesh takes its normal bounded
+# per-node reset (the contrast this prints).
 #
-# CLAIM (framed honestly): if we drain the mesh workloads OFF a node BEFORE its
-# ztunnel rolls, that node's ztunnel roll RSTs ZERO connections attributable to
-# that node - because there are no held connections left through it. The rest of
-# the mesh still takes its normal bounded per-node reset, which is the contrast
-# this scenario prints.
+# It is NOT `kubectl drain`: the probe/load/echo pods are nodeName-pinned (bypassing
+# the scheduler), so a plain drain would refuse to evict them or leave them Pending.
+# Instead it cordons, then scales those Deployments to 0 and `wait --for=delete`s.
+# selfHeal must be suspended on BOTH the probe and load Applications, else ArgoCD
+# reverts the scale-to-0 back to replicas:1 from HEAD.
 #
-# DETERMINISTIC design (board-mandated): we do NOT `kubectl drain` (eviction is
-# racy and our probe/load/echo pods are pinned by nodeName, which bypasses the
-# scheduler by design - a plain drain would either refuse to evict them or leave
-# them Pending). Instead we scale the target node's echo/probe/load Deployments
-# to 0 and `wait --for=delete`, so the drain is exact and observable. Cordon
-# still runs so nothing NEW schedules there during the window.
+# Scoped claim: zero-drop covers the harness-controlled workloads (probe/load/echo).
+# app-a/app-b/app-c are ordinary clients; one may sit on the target node and reset
+# elsewhere - invisible to the verdict and not part of the claim.
 #
-# SCOPED CLAIM: zero-drop covers the mesh workloads WE control on the node -
-# probe, load, and echo. app-a/app-b/app-c are ordinary schedulable clients (not
-# harness probes); one of them may happen to sit on the target node and reset
-# elsewhere. That is invisible to the verdict and is NOT part of the zero-drop
-# claim - the claim is scoped to the harness-controlled workloads.
-#
-# ArgoCD note: probe AND load have selfHeal=true, so we MUST suspend selfHeal on
-# BOTH Applications for the window - otherwise ArgoCD reverts our scale-to-0 back
-# to replicas:1 (from Git HEAD) and re-establishes the very connections we drained.
-#
-# No GHCR needed: the roll is provoked with the rollout-restart trigger (a
-# DaemonSet restart), so this scenario does not publish a chart or push to Git.
+# No GHCR: the roll is provoked with rollout-restart, so nothing is published or pushed.
 set -euo pipefail
 
 # shellcheck source=scripts/scenarios/scenario-lib.sh
@@ -43,9 +32,8 @@ DRAIN_CORDONED="no"
 
 # shellcheck disable=SC2329  # invoked indirectly by scen_install_trap's `trap`
 restore() {
-  # Reverse order, best-effort, idempotent. ArgoCD (once selfHeal is back on)
-  # also restores replicas:1 from HEAD; scaling back explicitly just makes the
-  # convergence immediate and does not depend on the reconcile loop.
+  # Best-effort and idempotent. ArgoCD restores replicas:1 once selfHeal is back on;
+  # scaling back explicitly just makes convergence immediate.
   local d
   for d in ${DRAIN_DEPLOYS}; do
     kubectl -n "${NS}" scale deploy "${d}" --replicas=1 >/dev/null 2>&1 || true

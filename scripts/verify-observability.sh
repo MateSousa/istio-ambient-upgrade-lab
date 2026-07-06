@@ -1,29 +1,15 @@
 #!/usr/bin/env bash
-# Observability gates (slice 6). Proves the Grafana OSS stack (Prometheus + Loki +
-# Grafana + Alloy) is deployed, healthy, and actually observing the mesh:
-#   - the four observability Applications are Synced/Healthy.
-#   - Prometheus /api/v1/targets shows an UP target for the ztunnel + istiod jobs
-#     (waypoint is best-effort/retried - it may lag wave-3/4 convergence).
-#   - Prometheus /api/v1/query returns data for the REAL upstream metric names and
-#     the lab:tcp_sockets_open recording rule.
-#   - Loki is ingesting (label values include demo-app + istio-system; a broad
-#     query returns > 0 streams) and the ECONNRESET|Connection terminated LogQL
-#     EXECUTES (200) - gate on ingestion + query-executes, NOT on non-empty, since
-#     no drop may have happened yet.
-#   - Grafana /api/health is ok and both datasources + the dashboard are present.
+# Observability gates: the Prometheus + Loki + Grafana + Alloy stack is deployed,
+# healthy, and observing the mesh. Checks the four Applications are Synced/Healthy;
+# Prometheus has UP ztunnel + istiod targets and data for the real metric names +
+# the lab:tcp_sockets_open recording rule; Loki is ingesting and the ECONNRESET
+# LogQL executes; Grafana health + datasources + dashboard are present. This is the
+# operator-facing view - the drill's verdict comes from the harness (results.json),
+# not from here; these gates check the view is wired up and honest.
 #
-# Invoked from verify.sh; standalone-runnable. Same PASS/FAIL + non-zero-on-fail
-# convention as the other verify-*.sh scripts.
-#
-# IMPORTANT (source of truth): these are the operator-facing SigNoz-parity VIEW.
-# The drill's verdict (new-conn failures, existing-conn RSTs, recovery) comes from
-# the slice-3 HARNESS (results.json), not from Prometheus/Grafana. This script
-# checks the view is wired up and honest, not that it decides PASS/FAIL.
-#
-# NETWORK DEPENDENCY: the observability charts are pulled from the PUBLIC Helm
-# repos (prometheus-community.github.io, grafana.github.io) by ArgoCD's repo-server.
-# If those are unreachable the apps never sync and these gates fail - see
-# scripts/up.sh preflight + README.
+# The observability charts are pulled from the public Helm repos by ArgoCD's
+# repo-server; if those are unreachable the apps never sync and these gates fail
+# (see scripts/up.sh preflight + README). Invoked from verify.sh; standalone-runnable.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -96,8 +82,7 @@ for app in prometheus loki alloy grafana observability-config; do
 done
 
 # ------------------------------------------------ Prometheus targets up --------
-# ztunnel + istiod are required; waypoint is best-effort (retried, never hard-fail
-# before wave 3/4 converge - see FIX 3).
+# ztunnel + istiod are required; waypoint is best-effort (it may lag wave 3/4).
 echo "== gate: Prometheus scrape targets UP (ztunnel + istiod required, waypoint best-effort) =="
 targets_json="$(pf_curl "${PROM_SVC}" "${PROM_PORT}" 19090 "/api/v1/targets")"
 job_up() {

@@ -1,18 +1,9 @@
 #!/usr/bin/env bash
-# Data-path gates for slice 2. Proves:
-#   - Postgres is up and OUTSIDE the ambient mesh (no dataplane-mode label AND
-#     its pod IP never appears in any ztunnel config_dump, checked against the
-#     same dump that DOES contain the in-mesh pgbouncer/app-a IPs).
-#   - pgbouncer-writer + app-a ARE in the ztunnel datapath on their nodes.
-#   - app-a serves /readyz and reads a widgets row via /query (app -> pgbouncer
-#     -> Postgres, end to end).
-#   - app-a holds a long-lived pooled client, visible in the pgbouncer admin
-#     console (SHOW CLIENTS / SHOW POOLS), not just a single pg_stat_activity row.
-#   - pool_mode=transaction and terminationGracePeriodSeconds=150 on both pools.
-#   - app-a and pgbouncer-writer are scheduled on DIFFERENT nodes (anti-affinity).
-#
-# Invoked from verify.sh; standalone-runnable. Same PASS/FAIL + non-zero-on-fail
-# convention as verify.sh.
+# Data-path gates: Postgres is up and out of mesh (no dataplane-mode label and its
+# IP absent from every ztunnel dump), pgbouncer-writer + app-a are in the datapath,
+# app-a reads a widgets row end to end and holds a long-lived pooled client, both
+# pools run pool_mode=transaction / grace 150, and app-a is anti-affinied off the
+# writer node. Invoked from verify.sh; standalone-runnable, same PASS/FAIL convention.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -81,9 +72,8 @@ mapfile -t writer_nodes < <(kubectl -n demo-app get pod -l app=pgbouncer,pgbounc
   -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | grep -v '^$')
 
 # ---------------------------------------- cache every ztunnel's config_dump ----
-# ztunnel receives the FULL mesh workload table via xDS, so every ztunnel dump
-# should list all ambient pod IPs (pgbouncer/app-a) and none of the out-of-mesh
-# Postgres IP. Cache one dump per node for the gates below.
+# Every ztunnel gets the full mesh workload table via xDS, so cache one dump per
+# node: it should list all in-mesh IPs and never the out-of-mesh Postgres IP.
 declare -A NODE_ZT
 declare -A ZT_DUMP
 while read -r ztp ztnode; do

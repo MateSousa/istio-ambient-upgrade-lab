@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
-# Build, package, and push the umbrella chart to the private GHCR OCI registry.
-#   - helm dependency build : vendor base/cni/istiod/ztunnel from upstream
-#   - helm package          : produce istio-<version>.tgz
-#   - helm registry login   : authenticate to ghcr.io with a PAT (write:packages)
-#   - helm push             : push to oci://ghcr.io/matesousa/charts
-# The package stays PRIVATE (GHCR default for a new package); we never flip it
-# public. GHCR_TOKEN must be exported and is never written to disk or echoed.
+# Vendor, package, and push the umbrella chart to the private GHCR OCI registry.
+# The package stays private (GHCR default for a new package). GHCR_TOKEN must be
+# exported and is never written to disk or echoed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

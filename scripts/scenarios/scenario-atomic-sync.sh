@@ -1,23 +1,15 @@
 #!/usr/bin/env bash
-# scenario-atomic-sync.sh - reproduce the two-uncontrolled-rolls hazard, then
-# mitigate it with an atomic (pinned) sync. Slice 8.
+# scenario-atomic-sync.sh - reproduce the floating auto-sync hazard, then mitigate it.
 #
-# THE HAZARD (reproduced in Phase A): if the mesh Application FLOATS a bounded
-# range (targetRevision ">=1.0.0 <2.0.0") with selfHeal, then simply PUBLISHING a
-# new chart auto-deploys it - unbidden, with no operator gate. During a real hop
-# that happens BEFORE the paired values change lands, so the mesh takes TWO
-# uncontrolled rolls (new templates against old images, then again) instead of one.
+# Phase A (hazard): with targetRevision floating a bounded range (">=1.0.0 <2.0.0")
+# and selfHeal on, simply publishing a chart auto-deploys it with no operator gate -
+# so a real hop takes two uncontrolled rolls instead of one.
 #
-# THE MITIGATION (Phase B): pin targetRevision to an EXACT version for the upgrade
-# window and bump the published chart version AND targetRevision TOGETHER in one
-# commit. The hop is then a single operator-gated sync - one roll, not two.
+# Phase B (mitigation): pin targetRevision to an exact version and bump the chart
+# version and targetRevision together in one commit - a single operator-gated roll.
 #
-# GIT WRITES TO MAIN (by design): demo-root watches HEAD, so the mesh.yaml edits
-# must be committed+pushed to main for ArgoCD to reconcile them. Both phases push;
-# the trailing restore re-pins mesh.yaml and pushes the baseline back.
-#
-# LIVE-ONLY: the roll counts come from the live ArgoCD Application history; this
-# script is meaningful only against a running cluster with GHCR_TOKEN.
+# Writes to main by design (demo-root watches HEAD). Live-only: the roll counts come
+# from the live ArgoCD Application history, so this needs a cluster + GHCR_TOKEN.
 set -euo pipefail
 
 # shellcheck source=scripts/scenarios/scenario-lib.sh
@@ -31,9 +23,8 @@ cp "${MESH}" "${MESH_BACKUP}"
 
 # shellcheck disable=SC2329  # invoked indirectly by scen_install_trap's `trap`
 restore() {
-  # Re-pin mesh.yaml to the last exact version and leave the tree clean. We
-  # restore the working file from the backup so the baseline (exact pin) is what
-  # remains checked out; the operator commits it if they want main re-pinned.
+  # Restore mesh.yaml from the backup so the baseline (exact pin) is what remains
+  # checked out; the operator commits it if they want main re-pinned.
   cp "${MESH_BACKUP}" "${MESH}" 2>/dev/null || true
   rm -f "${MESH_BACKUP}" 2>/dev/null || true
 }
@@ -56,9 +47,8 @@ scen_info "mesh sync-history length before publishing (floating): ${before_a}"
 
 FLOAT_A="$(scen_fresh_version patch)"
 scen_info "publishing a FRESH chart ${FLOAT_A} WITHOUT touching targetRevision - a floating range auto-syncs it"
-# Publish only; deliberately DO NOT bump targetRevision. Under the floating range
-# ArgoCD resolves to the new version and selfHeals it in - the uncontrolled roll.
-# Rewrite the umbrella chart version to FLOAT_A and publish it.
+# Publish only; deliberately do NOT bump targetRevision - the floating range makes
+# ArgoCD selfHeal the new version in, the uncontrolled roll.
 tmp="$(mktemp)"
 sed -E 's|^(version:[[:space:]]*).*$|\1'"${FLOAT_A}"'|' "${ROOT}/charts/istio/Chart.yaml" > "${tmp}"
 mv "${tmp}" "${ROOT}/charts/istio/Chart.yaml"
@@ -81,7 +71,6 @@ scen_info "Phase B: PIN targetRevision exactly and bump version + targetRevision
 before_b="$(scen_mesh_history_len)"
 
 PIN_B="$(scen_fresh_version patch)"
-# Bump the umbrella chart version and publish...
 tmp="$(mktemp)"
 sed -E 's|^(version:[[:space:]]*).*$|\1'"${PIN_B}"'|' "${ROOT}/charts/istio/Chart.yaml" > "${tmp}"
 mv "${tmp}" "${ROOT}/charts/istio/Chart.yaml"
